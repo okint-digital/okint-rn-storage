@@ -1,0 +1,8 @@
+lib/
+node_modules/
+coverage/
+*.log
+*.tgz
+.DS_Store
+.idea/
+.vscode/

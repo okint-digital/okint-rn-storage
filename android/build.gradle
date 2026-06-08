@@ -1,0 +1,48 @@
+// okint-rn-storage — Android library build.
+// Relies on the host app's React Native Gradle setup for the Android Gradle
+// Plugin + Kotlin plugin classpath (RN 0.73+ convention), so no buildscript
+// block is needed here. Versions fall back to sensible defaults if the root
+// project doesn't expose them.
+
+apply plugin: "com.android.library"
+apply plugin: "org.jetbrains.kotlin.android"
+
+def safeExtGet(prop, fallback) {
+  rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+}
+
+android {
+  namespace "com.okint.rnstorage"
+  compileSdkVersion safeExtGet("compileSdkVersion", 35)
+
+  defaultConfig {
+    minSdkVersion safeExtGet("minSdkVersion", 24)
+    targetSdkVersion safeExtGet("targetSdkVersion", 35)
+    // Ship Tink/protobuf keep rules to consumers so R8 can't strip reflection-based
+    // keyset parsing (which would manifest as false "corruption").
+    consumerProguardFiles "proguard-rules.pro"
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+
+  kotlinOptions {
+    jvmTarget = "17"
+  }
+}
+
+repositories {
+  mavenCentral()
+  google()
+}
+
+dependencies {
+  // Version supplied by the host app's React Native Gradle Plugin — do NOT pin.
+  implementation "com.facebook.react:react-android"
+  // Keystore-backed encrypted key-value store (master key in AndroidKeystore).
+  // Stable 1.1.0 (the APIs are deprecated upstream but stable; our module adds
+  // the crash recovery they lack — see OkintRnStorageModule).
+  implementation "androidx.security:security-crypto:1.1.0"
+}

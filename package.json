@@ -1,0 +1,73 @@
+{
+  "name": "okint-rn-storage",
+  "version": "0.3.0",
+  "description": "Vanilla, pluggable React Native storage — one API over swappable backends: hardware Keystore/Keychain (secure), SharedPreferences/UserDefaults (async), a synchronous fast store, or in-memory.",
+  "keywords": [
+    "react-native",
+    "storage",
+    "keystore",
+    "keychain",
+    "secure-storage",
+    "encrypted-storage",
+    "async-storage",
+    "mmkv-alternative",
+    "okint"
+  ],
+  "license": "MIT",
+  "author": "Okint Digital",
+  "homepage": "https://github.com/okint-digital/okint-rn-storage#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/okint-digital/okint-rn-storage.git"
+  },
+  "bugs": {
+    "url": "https://github.com/okint-digital/okint-rn-storage/issues"
+  },
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "react-native": "src/index.ts",
+  "source": "src/index.ts",
+  "files": [
+    "src",
+    "lib",
+    "android",
+    "ios",
+    "okint-rn-storage.podspec",
+    "react-native.config.js",
+    "README.md",
+    "LICENSE",
+    "!**/__tests__",
+    "!**/*.spec.ts"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "jest",
+    "lint": "eslint src",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "eslint": "^9.18.0",
+    "globals": "^15.14.0",
+    "jest": "^29.7.0",
+    "react": "^19.1.0",
+    "react-native": "^0.81.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

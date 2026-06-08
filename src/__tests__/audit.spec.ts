@@ -128,3 +128,20 @@ describe('audit: sync load is idempotent', () => {
     expect(s.getString('k')).toBe('v');
   });
 });
+
+describe('audit: zero-load sync hydration (loadSync)', () => {
+  it('hydrates synchronously and serves reads with no await', () => {
+    const s = new OkintSyncStore('fast', new MemorySyncPersistence());
+    s.loadSync({ theme: 'dark', n: '42' });
+    expect(s.getString('theme')).toBe('dark');
+    expect(s.getNumber('n')).toBe(42);
+  });
+
+  it('loadSync is idempotent (a second call does not clobber writes)', () => {
+    const s = new OkintSyncStore('memory', new MemorySyncPersistence());
+    s.loadSync({ a: '1' });
+    s.setString('a', '2');
+    s.loadSync({ a: '1' }); // no-op
+    expect(s.getString('a')).toBe('2');
+  });
+});

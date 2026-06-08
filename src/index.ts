@@ -83,6 +83,47 @@ export function createSyncStorage(options: OkintSyncStorageOptions): Promise<Oki
   return built;
 }
 
+// Synchronous, zero-load sync stores: hydrated in one blocking native call at
+// construction, then pure in-JS reads (maximum read performance). Interned per
+// (backend, namespace) like the async variant.
+const syncRegistrySync = new Map<string, OkintSyncStorage>();
+
+/**
+ * Create a synchronous storage instance WITHOUT an async load step. Hydrates the
+ * snapshot in a single blocking native bulk-read, then all get/set are
+ * synchronous in-JS-memory ops (writes persist in the background). Use this when
+ * you need state available immediately at startup (e.g. before first render).
+ *
+ * @example
+ *   const fast = createSyncStorageSync({ backend: 'fast', namespace: 'app' });
+ *   const onboarded = fast.getBoolean('onboarded'); // sync, zero-load
+ */
+export function createSyncStorageSync(options: OkintSyncStorageOptions): OkintSyncStorage {
+  const namespace = normalizeNamespace(options.namespace, DEFAULT_NAMESPACE);
+  const registryKey = `${options.backend}:${namespace}`;
+  const existing = syncRegistrySync.get(registryKey);
+  if (existing) return existing;
+
+  let store: OkintSyncStore;
+  switch (options.backend) {
+    case 'memory':
+      store = new OkintSyncStore('memory', new MemorySyncPersistence());
+      store.loadSync({});
+      break;
+    case 'fast': {
+      const native = getNativeModule();
+      const entries = native.getEntriesSync(namespace, 'async');
+      store = new OkintSyncStore('fast', new BackendSyncPersistence(new NativeBackend(native, namespace, 'async')));
+      store.loadSync(entries);
+      break;
+    }
+    default:
+      throw new OkintStorageError('UNKNOWN_BACKEND', `Unknown sync backend "${String(options.backend)}".`);
+  }
+  syncRegistrySync.set(registryKey, store);
+  return store;
+}
+
 async function buildSyncStore(
   backend: OkintSyncStorageOptions['backend'],
   namespace: string,

@@ -94,14 +94,13 @@ invalid input. `namespace` partitions stores so they never collide.
 | `async` | SharedPreferences | UserDefaults suite | ❌ | large / non-sensitive data |
 | `memory` | — (pure JS) | — (pure JS) | n/a | ephemeral cache, tests |
 | `fast` (sync) | SharedPreferences snapshot | UserDefaults snapshot | ❌ | **synchronous** state/flags/cache (MMKV-style) — via `createSyncStorage` |
-| `encrypted` | AES-256-GCM (Keystore key) + plain prefs | Keychain (dedicated service) | ✅ hardware key | larger encrypted blobs (bigger headroom than `secure`) |
+| `encrypted` | AES-256-GCM (Keystore key) over SQLite | AES-256-CBC + HMAC-SHA256 (key in Keychain) over SQLite | ✅ hardware-rooted key | large encrypted blobs / encrypted DB |
 | `sqlite` | SQLite key/value table | SQLite (`sqlite3`) key/value table | ❌ | larger datasets, SQL-backed key/value |
 
-All five backends are implemented. On Android, `encrypted` wraps values in
-AES-256-GCM using a per-namespace AndroidKeystore key and stores the ciphertext
-in plain SharedPreferences (so it isn't bound by Keystore item sizes); on iOS it
-uses the Keychain under a dedicated service (so it shares the Keychain size
-envelope — use Android for very large iOS-incompatible blobs, or `sqlite`).
+All five backends are implemented. `encrypted` seals each value with an
+authenticated cipher whose key is rooted in the hardware Keystore/Keychain and
+stores the ciphertext in SQLite — so it handles large blobs and many entries
+(an "encrypted database" at the value level, no SQLCipher dependency).
 
 ### Synchronous (`fast`) store
 
@@ -109,14 +108,21 @@ envelope — use Android for very large iOS-incompatible blobs, or `sqlite`).
 Keystore crypto). For the MMKV-style **synchronous** need — persist/rehydrate,
 feature flags, hot-path UI state — use `createSyncStorage`:
 
-- It loads a snapshot **once** (the `await` on `createSyncStorage`), then every
-  `get`/`set` is **synchronous**.
-- Writes apply to memory immediately and persist in the background; call
-  `flush()` (e.g. on app background) for a durability barrier.
-- **Trade-off vs MMKV:** okint's sync is snapshot-based (one async load up front;
-  background persistence) rather than mmap zero-load. This covers the dominant
-  sync use cases with zero native risk. A true zero-load JSI backend is on the
-  roadmap. Use `secure` (async) for tokens — never a sync store.
+- It loads a snapshot **once**, then every `get`/`set` is **synchronous** in-JS
+  memory (the fastest possible read path — no per-call bridge crossing).
+- Writes apply to memory immediately and persist in the background, **coalesced**
+  per key; call `flush()` (e.g. on app background) for a durability barrier.
+- **Zero-load variant** — `createSyncStorageSync` hydrates the snapshot in a
+  single blocking native bulk-read and returns synchronously, so state is
+  available immediately at startup (e.g. before first render):
+
+  ```ts
+  import { createSyncStorageSync } from 'okint-rn-storage';
+  const fast = createSyncStorageSync({ backend: 'fast', namespace: 'app' });
+  const onboarded = fast.getBoolean('onboarded'); // sync, no await, no load step
+  ```
+
+  Use `secure` for tokens — never a sync store.
 
 ## Compared to alternatives
 
@@ -157,23 +163,19 @@ catch (e) { if (e instanceof OkintStorageError && e.code === 'PARSE_ERROR') { /*
 
 ## Security & reliability
 
-- **Android secure** uses AndroidX `EncryptedSharedPreferences`; the AES-256
-  master key lives in the AndroidKeystore (TEE-backed where available), keys
-  encrypted AES256-SIV, values AES256-GCM. Writes use `commit()` so a secret is
-  durably persisted before the promise resolves.
-- **Per-namespace master key:** each secure namespace gets its **own** Keystore
-  alias, so a failure or recovery in one namespace can never affect another's
-  data (no shared-key blast radius).
-- **Conservative, scoped crash recovery (Android):** if a keyset becomes
-  unreadable (backup/restore, device transfer, key invalidation —
-  `AEADBadTagException` / `InvalidProtocolBufferException` /
-  `KeyPermanentlyInvalidatedException`) okint recovers instead of crashing on
-  launch: it first drops **only that namespace's** prefs file (recreating the
-  keyset under the existing master key); only if that still fails does it drop
-  that namespace's master key. Transient errors (device locked, OOM) are **not**
-  treated as corruption — they're surfaced, never destroy data. Recovered reads
-  return `null`, so the app re-authenticates. (Tink/protobuf keep-rules are
-  shipped so R8 minification can't masquerade as corruption.)
+- **Android `secure`** uses **Google Tink AEAD** with a per-namespace keyset
+  wrapped by an AndroidKeystore master key (hardware-rooted), stored via Jetpack
+  **DataStore** — the modern, non-deprecated replacement for the (now-deprecated)
+  `androidx.security:security-crypto`. A corruption handler resets a damaged
+  store to empty rather than crashing on launch. Tink/DataStore keep-rules are
+  shipped so R8 minification can't break keyset loading.
+- **iOS `secure`** uses the Keychain with
+  `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` (not iCloud-synced, not in
+  encrypted backups) + the data-protection keychain.
+- **`encrypted`** authenticates as well as encrypts: Android AES-256-GCM (a
+  per-namespace Keystore key); iOS AES-256-CBC + HMAC-SHA256 encrypt-then-MAC
+  (64-byte key in the Keychain, constant-time MAC check). Ciphertext lives in
+  SQLite, so it scales to large blobs and many entries.
 - **iOS secure** uses the Keychain with
   `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` — not synced to iCloud, not
   migrated in encrypted backups, available to background tasks after first
@@ -196,13 +198,13 @@ by **default** (unlike libraries that fall back to plaintext SharedPreferences).
 
 ## Roadmap
 
-- TurboModule (codegen) implementation for a true zero-load JSI sync path (the
-  `fast` store already provides synchronous access via a loaded snapshot).
-- SQLCipher option for the `sqlite` backend (encrypted database).
-- Android: migrate the `secure` backend off the now-deprecated `security-crypto`
-  to Jetpack DataStore + Tink `StreamingAead` (transparent to callers).
-- iOS `encrypted`: optional file-protection / app-level AEAD path for very large
-  blobs beyond the Keychain size envelope.
+All five backends, synchronous + zero-load sync, hardware-rooted encryption, and
+the migration off the deprecated `security-crypto` are **implemented**. Future
+optimizations:
+
+- A C++/JSI HostObject (mmap) engine for the absolute fastest synchronous path
+  (the snapshot + `createSyncStorageSync` already deliver zero-load sync today).
+- Optional SQLCipher backing for whole-database (not just per-value) encryption.
 
 ## License
 

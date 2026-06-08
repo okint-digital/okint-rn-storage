@@ -47,6 +47,16 @@ export class OkintSyncStore implements OkintSyncStorage {
     this.loaded = true;
   }
 
+  /**
+   * Synchronous hydration (the zero-load path). Used by `createSyncStorageSync`
+   * after one blocking native bulk-read. Idempotent like `load()`.
+   */
+  loadSync(entries: Record<string, string>): void {
+    if (this.loaded) return;
+    this.map = new Map(Object.entries(entries));
+    this.loaded = true;
+  }
+
   getString(key: string): string | null {
     assertKey(key);
     const v = this.map.get(key);

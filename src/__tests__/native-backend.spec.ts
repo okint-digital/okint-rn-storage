@@ -35,6 +35,10 @@ function makeFakeNative() {
       calls.push({ op: 'getAllKeys', service, store });
       return [...bucket(service, store).keys()];
     },
+    getEntriesSync(service, store) {
+      calls.push({ op: 'getEntriesSync', service, store });
+      return Object.fromEntries(bucket(service, store));
+    },
   };
   return { native, calls, stores };
 }
@@ -86,6 +90,7 @@ describe('NativeBackend', () => {
       removeItem: () => Promise.resolve(),
       clear: () => Promise.resolve(),
       getAllKeys: () => Promise.resolve([]),
+      getEntriesSync: () => ({}),
     };
     const b = new NativeBackend(failing, 'auth', 'secure');
     await expect(b.setString('k', 'v')).rejects.toMatchObject({

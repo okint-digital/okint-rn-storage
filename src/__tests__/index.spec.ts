@@ -3,7 +3,7 @@
 // never touch NativeModules, so an empty mock is sufficient.
 jest.mock('react-native', () => ({ NativeModules: {} }), { virtual: true });
 
-import { createStorage, createSyncStorage, OkintStorageError } from '../index';
+import { createStorage, createSyncStorage, createSyncStorageSync, OkintStorageError } from '../index';
 
 describe('createStorage (memory)', () => {
   it('builds a working async store', async () => {
@@ -44,5 +44,24 @@ describe('createSyncStorage (memory) — singleton per namespace', () => {
     await expect(createSyncStorage({ backend: 'memory', namespace: 'a/b' })).rejects.toBeInstanceOf(
       OkintStorageError,
     );
+  });
+});
+
+describe('createSyncStorageSync (zero-load, memory)', () => {
+  it('returns a usable store synchronously (no await)', () => {
+    const s = createSyncStorageSync({ backend: 'memory', namespace: 'app' });
+    expect(s.backend).toBe('memory');
+    s.setString('k', 'v');
+    expect(s.getString('k')).toBe('v');
+  });
+
+  it('is interned per namespace', () => {
+    const a = createSyncStorageSync({ backend: 'memory', namespace: 'sync1' });
+    const b = createSyncStorageSync({ backend: 'memory', namespace: 'sync1' });
+    expect(a).toBe(b);
+  });
+
+  it('validates namespace (throws synchronously)', () => {
+    expect(() => createSyncStorageSync({ backend: 'memory', namespace: 'a/b' })).toThrow(OkintStorageError);
   });
 });

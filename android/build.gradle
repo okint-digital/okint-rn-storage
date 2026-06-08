@@ -41,8 +41,9 @@ repositories {
 dependencies {
   // Version supplied by the host app's React Native Gradle Plugin — do NOT pin.
   implementation "com.facebook.react:react-android"
-  // Keystore-backed encrypted key-value store (master key in AndroidKeystore).
-  // Stable 1.1.0 (the APIs are deprecated upstream but stable; our module adds
-  // the crash recovery they lack — see OkintRnStorageModule).
-  implementation "androidx.security:security-crypto:1.1.0"
+  // `secure` store: Tink AEAD (Keystore-wrapped keyset) over Jetpack DataStore —
+  // the modern, non-deprecated replacement for androidx.security:security-crypto.
+  implementation "androidx.datastore:datastore-preferences:1.1.1"
+  implementation "com.google.crypto.tink:tink-android:1.13.0"
+  implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
 }

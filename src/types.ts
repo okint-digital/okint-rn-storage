@@ -146,4 +146,10 @@ export interface NativeOkintStorage {
   removeItem(service: string, key: string, store: NativeStoreKind): Promise<void>;
   clear(service: string, store: NativeStoreKind): Promise<void>;
   getAllKeys(service: string, store: NativeStoreKind): Promise<string[]>;
+  /**
+   * Synchronous bulk read (blocking bridge call) used by the zero-load sync
+   * store: it hydrates the in-memory snapshot in one shot at construction, so
+   * subsequent reads are pure in-JS Map lookups (no per-call bridge crossing).
+   */
+  getEntriesSync(service: string, store: NativeStoreKind): Record<string, string>;
 }

@@ -1,7 +1,7 @@
 # okint-rn-storage — consumer ProGuard/R8 rules.
-# Tink (used by androidx.security EncryptedSharedPreferences) relies on
-# reflection-based protobuf parsing of its keyset. Without these keeps, R8 can
-# strip classes and break keyset loading at runtime (surfacing as corruption).
+# Tink (used by the `secure` store) relies on reflection-based protobuf parsing
+# of its keyset. Without these keeps, R8 can strip classes and break keyset
+# loading at runtime.
 
 -keep class com.google.crypto.tink.** { *; }
 -keep class com.google.crypto.tink.shaded.protobuf.** { *; }
@@ -12,9 +12,9 @@
 -dontwarn com.google.errorprone.annotations.**
 -dontwarn javax.annotation.**
 
-# AndroidX Security crypto
--keep class androidx.security.crypto.** { *; }
--dontwarn androidx.security.crypto.**
+# Jetpack DataStore / protobuf-lite
+-keep class androidx.datastore.** { *; }
+-dontwarn androidx.datastore.**
 
 # Our module (autolinking / reflection by RN)
 -keep class com.okint.rnstorage.** { *; }

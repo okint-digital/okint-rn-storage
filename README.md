@@ -94,10 +94,14 @@ invalid input. `namespace` partitions stores so they never collide.
 | `async` | SharedPreferences | UserDefaults suite | ❌ | large / non-sensitive data |
 | `memory` | — (pure JS) | — (pure JS) | n/a | ephemeral cache, tests |
 | `fast` (sync) | SharedPreferences snapshot | UserDefaults snapshot | ❌ | **synchronous** state/flags/cache (MMKV-style) — via `createSyncStorage` |
-| `encrypted` | _roadmap_ | _roadmap_ | ✅ app-level AES | large encrypted blobs (key in `secure`) |
-| `sqlite` | _roadmap_ | _roadmap_ | optional | structured/queryable data |
+| `encrypted` | AES-256-GCM (Keystore key) + plain prefs | Keychain (dedicated service) | ✅ hardware key | larger encrypted blobs (bigger headroom than `secure`) |
+| `sqlite` | SQLite key/value table | SQLite (`sqlite3`) key/value table | ❌ | larger datasets, SQL-backed key/value |
 
-`encrypted` and `sqlite` currently throw `OkintStorageError('BACKEND_NOT_IMPLEMENTED')`.
+All five backends are implemented. On Android, `encrypted` wraps values in
+AES-256-GCM using a per-namespace AndroidKeystore key and stores the ciphertext
+in plain SharedPreferences (so it isn't bound by Keystore item sizes); on iOS it
+uses the Keychain under a dedicated service (so it shares the Keychain size
+envelope — use Android for very large iOS-incompatible blobs, or `sqlite`).
 
 ### Synchronous (`fast`) store
 
@@ -192,12 +196,13 @@ by **default** (unlike libraries that fall back to plaintext SharedPreferences).
 
 ## Roadmap
 
-- `encrypted` backend (AES-GCM over `async`, key sealed in `secure`) for large
-  encrypted blobs that exceed practical Keychain/Keystore sizes.
-- `sqlite` backend (optionally SQLCipher).
-- TurboModule (codegen) implementation for a JSI fast path.
-- Android: migrate the secure backend off the now-deprecated `security-crypto`
+- TurboModule (codegen) implementation for a true zero-load JSI sync path (the
+  `fast` store already provides synchronous access via a loaded snapshot).
+- SQLCipher option for the `sqlite` backend (encrypted database).
+- Android: migrate the `secure` backend off the now-deprecated `security-crypto`
   to Jetpack DataStore + Tink `StreamingAead` (transparent to callers).
+- iOS `encrypted`: optional file-protection / app-level AEAD path for very large
+  blobs beyond the Keychain size envelope.
 
 ## License
 

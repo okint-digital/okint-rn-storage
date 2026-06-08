@@ -1,74 +1,77 @@
 import { NativeBackend } from '../backends/native-backend';
-import type { NativeOkintStorage } from '../types';
+import type { NativeOkintStorage, NativeStoreKind } from '../types';
 
-/** Fake native module that records (service, secure) and stores per-service. */
+/** Fake native module that records (service, store) and stores per (service, store). */
 function makeFakeNative() {
   const stores = new Map<string, Map<string, string>>();
-  const calls: Array<{ op: string; service: string; secure: boolean; key?: string }> = [];
-  const store = (service: string) => {
-    let m = stores.get(service);
+  const calls: Array<{ op: string; service: string; store: NativeStoreKind; key?: string }> = [];
+  const bucket = (service: string, store: NativeStoreKind) => {
+    const id = `${store}:${service}`;
+    let m = stores.get(id);
     if (!m) {
       m = new Map();
-      stores.set(service, m);
+      stores.set(id, m);
     }
     return m;
   };
   const native: NativeOkintStorage = {
-    async setItem(service, key, value, secure) {
-      calls.push({ op: 'setItem', service, secure, key });
-      store(service).set(key, value);
+    async setItem(service, key, value, store) {
+      calls.push({ op: 'setItem', service, store, key });
+      bucket(service, store).set(key, value);
     },
-    async getItem(service, key, secure) {
-      calls.push({ op: 'getItem', service, secure, key });
-      return store(service).get(key) ?? null;
+    async getItem(service, key, store) {
+      calls.push({ op: 'getItem', service, store, key });
+      return bucket(service, store).get(key) ?? null;
     },
-    async removeItem(service, key, secure) {
-      calls.push({ op: 'removeItem', service, secure, key });
-      store(service).delete(key);
+    async removeItem(service, key, store) {
+      calls.push({ op: 'removeItem', service, store, key });
+      bucket(service, store).delete(key);
     },
-    async clear(service, secure) {
-      calls.push({ op: 'clear', service, secure });
-      store(service).clear();
+    async clear(service, store) {
+      calls.push({ op: 'clear', service, store });
+      bucket(service, store).clear();
     },
-    async getAllKeys(service, secure) {
-      calls.push({ op: 'getAllKeys', service, secure });
-      return [...store(service).keys()];
+    async getAllKeys(service, store) {
+      calls.push({ op: 'getAllKeys', service, store });
+      return [...bucket(service, store).keys()];
     },
   };
   return { native, calls, stores };
 }
 
 describe('NativeBackend', () => {
-  it('forwards the service + secure flag for a secure backend', async () => {
+  it('forwards service + store kind for a secure backend', async () => {
     const { native, calls } = makeFakeNative();
-    const b = new NativeBackend(native, 'auth', true, 'secure');
+    const b = new NativeBackend(native, 'auth', 'secure');
 
     await b.setString('refreshToken', 'abc');
     expect(await b.getString('refreshToken')).toBe('abc');
 
-    expect(calls[0]).toEqual({ op: 'setItem', service: 'auth', secure: true, key: 'refreshToken' });
+    expect(calls[0]).toEqual({ op: 'setItem', service: 'auth', store: 'secure', key: 'refreshToken' });
     expect(b.kind).toBe('secure');
   });
 
-  it('uses secure=false for the async backend', async () => {
+  it('forwards the right store kind for async/encrypted/sqlite', async () => {
     const { native, calls } = makeFakeNative();
-    const b = new NativeBackend(native, 'cache', false, 'async');
-    await b.setString('k', 'v');
-    expect(calls[0]?.secure).toBe(false);
-    expect(b.kind).toBe('async');
+    for (const kind of ['async', 'encrypted', 'sqlite'] as const) {
+      const b = new NativeBackend(native, 'svc', kind);
+      await b.setString('k', 'v');
+      expect(b.kind).toBe(kind);
+    }
+    expect(calls.map((c) => c.store)).toEqual(['async', 'encrypted', 'sqlite']);
   });
 
-  it('partitions by service across backends', async () => {
+  it('partitions by (service, store) so stores never collide', async () => {
     const { native } = makeFakeNative();
-    const auth = new NativeBackend(native, 'auth', true, 'secure');
-    const cache = new NativeBackend(native, 'cache', false, 'async');
-    await auth.setString('k', 'secret');
-    expect(await cache.getString('k')).toBeNull();
+    const secure = new NativeBackend(native, 'app', 'secure');
+    const encrypted = new NativeBackend(native, 'app', 'encrypted');
+    await secure.setString('k', 'secret');
+    expect(await encrypted.getString('k')).toBeNull(); // same service, different store
   });
 
-  it('clear() and keys() operate on the right service', async () => {
+  it('clear() and keys() operate on the right store', async () => {
     const { native } = makeFakeNative();
-    const b = new NativeBackend(native, 'auth', true, 'secure');
+    const b = new NativeBackend(native, 'auth', 'sqlite');
     await b.setString('a', '1');
     await b.setString('b', '2');
     expect((await b.keys()).sort()).toEqual(['a', 'b']);
@@ -84,7 +87,7 @@ describe('NativeBackend', () => {
       clear: () => Promise.resolve(),
       getAllKeys: () => Promise.resolve([]),
     };
-    const b = new NativeBackend(failing, 'auth', true, 'secure');
+    const b = new NativeBackend(failing, 'auth', 'secure');
     await expect(b.setString('k', 'v')).rejects.toMatchObject({
       name: 'OkintStorageError',
       code: 'NATIVE_ERROR',

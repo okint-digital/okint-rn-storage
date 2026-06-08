@@ -2,11 +2,15 @@
  * okint-rn-storage — public types.
  *
  * One async API, several swappable backends. Pick the backend per the data's
- * needs: secrets → `secure` (hardware Keystore / Keychain); large/plain data →
- * `async`; ephemeral → `memory`. `encrypted` and `sqlite` are on the roadmap.
+ * needs: secrets → `secure` (hardware Keystore / Keychain); large hardware-
+ * encrypted blobs → `encrypted`; structured/large data → `sqlite`; plain data →
+ * `async`; ephemeral → `memory`.
  */
 
 export type BackendKind = 'memory' | 'secure' | 'async' | 'encrypted' | 'sqlite';
+
+/** The native-backed stores (everything except the pure-JS `memory`). */
+export type NativeStoreKind = 'secure' | 'async' | 'encrypted' | 'sqlite';
 
 export interface OkintStorageOptions {
   /** Which storage backend to use. */
@@ -134,12 +138,12 @@ export interface SyncPersistence {
 
 /**
  * Shape of the native module (Android/iOS). The JS layer talks to this; tests
- * inject a fake implementation. `secure=true` selects the hardware-backed store.
+ * inject a fake implementation. `store` selects which native store to target.
  */
 export interface NativeOkintStorage {
-  setItem(service: string, key: string, value: string, secure: boolean): Promise<void>;
-  getItem(service: string, key: string, secure: boolean): Promise<string | null>;
-  removeItem(service: string, key: string, secure: boolean): Promise<void>;
-  clear(service: string, secure: boolean): Promise<void>;
-  getAllKeys(service: string, secure: boolean): Promise<string[]>;
+  setItem(service: string, key: string, value: string, store: NativeStoreKind): Promise<void>;
+  getItem(service: string, key: string, store: NativeStoreKind): Promise<string | null>;
+  removeItem(service: string, key: string, store: NativeStoreKind): Promise<void>;
+  clear(service: string, store: NativeStoreKind): Promise<void>;
+  getAllKeys(service: string, store: NativeStoreKind): Promise<string[]>;
 }

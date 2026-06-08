@@ -18,8 +18,11 @@ describe('createStorage (memory)', () => {
     expect(() => createStorage({ backend: 'memory', namespace: 'a/b' })).toThrow(OkintStorageError);
   });
 
-  it('throws for not-yet-implemented backends', () => {
-    expect(() => createStorage({ backend: 'encrypted' })).toThrow(/BACKEND_NOT_IMPLEMENTED|roadmap/i);
+  it('wires encrypted/sqlite to the native module (missing here -> clear error)', () => {
+    // With the native module mocked away these surface NATIVE_MODULE_MISSING
+    // rather than BACKEND_NOT_IMPLEMENTED — they are implemented backends that
+    // simply require the native module to be present.
+    expect(() => createStorage({ backend: 'encrypted' })).toThrow(/NATIVE_MODULE_MISSING|native module/i);
     expect(() => createStorage({ backend: 'sqlite' })).toThrow(OkintStorageError);
   });
 });

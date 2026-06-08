@@ -38,15 +38,10 @@ function resolveBackend(kind: BackendKind, namespace: string): StorageBackend {
     case 'memory':
       return new MemoryBackend('memory');
     case 'secure':
-      return new NativeBackend(getNativeModule(), namespace, true, 'secure');
     case 'async':
-      return new NativeBackend(getNativeModule(), namespace, false, 'async');
     case 'encrypted':
     case 'sqlite':
-      throw new OkintStorageError(
-        'BACKEND_NOT_IMPLEMENTED',
-        `Backend "${kind}" is on the roadmap. Use 'secure', 'async', or 'memory' for now.`,
-      );
+      return new NativeBackend(getNativeModule(), namespace, kind);
     default:
       throw new OkintStorageError('UNKNOWN_BACKEND', `Unknown storage backend "${String(kind)}".`);
   }
@@ -99,7 +94,7 @@ async function buildSyncStore(
       break;
     case 'fast':
       persistence = new BackendSyncPersistence(
-        new NativeBackend(getNativeModule(), namespace, false, 'async'),
+        new NativeBackend(getNativeModule(), namespace, 'async'),
       );
       break;
     default:

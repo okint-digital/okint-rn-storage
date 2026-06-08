@@ -1,10 +1,14 @@
-import type { BackendKind, NativeOkintStorage, StorageBackend } from '../types';
+import type { NativeOkintStorage, NativeStoreKind, StorageBackend } from '../types';
 import { OkintStorageError } from '../errors';
 
 /**
- * Backend that delegates to the native module. Used for both:
- *   - `secure` (secure=true)  → hardware Keystore / Keychain
- *   - `async`  (secure=false) → SharedPreferences / UserDefaults
+ * Backend that delegates to the native module. One class drives all four
+ * native-backed stores, selected by `kind`, which is forwarded to native as the
+ * `store` discriminator:
+ *   - `secure`    → hardware Keystore / Keychain
+ *   - `async`     → SharedPreferences / UserDefaults (plaintext)
+ *   - `encrypted` → AES-encrypted blobs, key in Keystore/Keychain (large values)
+ *   - `sqlite`    → SQLite-backed key/value
  *
  * The native module is injected (not imported here) so this file stays free of
  * `react-native` and is unit-testable under plain Node with a fake bridge.
@@ -13,13 +17,12 @@ export class NativeBackend implements StorageBackend {
   constructor(
     private readonly native: NativeOkintStorage,
     private readonly service: string,
-    private readonly secure: boolean,
-    readonly kind: BackendKind,
+    readonly kind: NativeStoreKind,
   ) {}
 
   async getString(key: string): Promise<string | null> {
     try {
-      const v = await this.native.getItem(this.service, key, this.secure);
+      const v = await this.native.getItem(this.service, key, this.kind);
       return v ?? null;
     } catch (e) {
       throw wrap(e, `get "${key}"`);
@@ -28,7 +31,7 @@ export class NativeBackend implements StorageBackend {
 
   async setString(key: string, value: string): Promise<void> {
     try {
-      await this.native.setItem(this.service, key, value, this.secure);
+      await this.native.setItem(this.service, key, value, this.kind);
     } catch (e) {
       throw wrap(e, `set "${key}"`);
     }
@@ -36,7 +39,7 @@ export class NativeBackend implements StorageBackend {
 
   async remove(key: string): Promise<void> {
     try {
-      await this.native.removeItem(this.service, key, this.secure);
+      await this.native.removeItem(this.service, key, this.kind);
     } catch (e) {
       throw wrap(e, `remove "${key}"`);
     }
@@ -44,7 +47,7 @@ export class NativeBackend implements StorageBackend {
 
   async clear(): Promise<void> {
     try {
-      await this.native.clear(this.service, this.secure);
+      await this.native.clear(this.service, this.kind);
     } catch (e) {
       throw wrap(e, 'clear');
     }
@@ -52,7 +55,7 @@ export class NativeBackend implements StorageBackend {
 
   async keys(): Promise<string[]> {
     try {
-      const ks = await this.native.getAllKeys(this.service, this.secure);
+      const ks = await this.native.getAllKeys(this.service, this.kind);
       return ks ?? [];
     } catch (e) {
       throw wrap(e, 'keys');

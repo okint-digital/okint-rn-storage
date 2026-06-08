@@ -15,6 +15,7 @@ Pod::Spec.new do |s|
   s.source_files = "ios/**/*.{h,m,mm}"
   s.requires_arc = true
   s.frameworks   = "Security"
+  s.libraries    = "sqlite3"
 
   s.dependency "React-Core"
 end

@@ -7,9 +7,10 @@ module.exports = {
         packageImportPath: 'import com.okint.rnstorage.OkintRnStoragePackage;',
         packageInstance: 'new OkintRnStoragePackage()',
       },
-      ios: {
-        podspecPath: __dirname + '/okint-rn-storage.podspec',
-      },
+      // iOS: no entry needed. The CLI auto-discovers our single root podspec
+      // (okint-rn-storage.podspec). An explicit `podspecPath` here is rejected
+      // by the RN CLI dependency-config schema (it's a project-config key, not
+      // a dependency-config one) and emits an "invalid configuration" warning.
     },
   },
 };

@@ -48,8 +48,27 @@ static NSString *OkintScope(NSString *store, NSString *service) {
 }
 
 static NSUserDefaults *OkintDefaults(NSString *store, NSString *service) {
-  NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:OkintScope(store, service)];
-  return d ?: [NSUserDefaults standardUserDefaults];
+  // Do NOT fall back to standardUserDefaults: if the scoped suite ever fails to
+  // init, falling back would collapse every distinct namespace onto the shared
+  // global domain (cross-namespace read/write, and clear() would miss). A nil
+  // return makes callers no-op (fail closed) — isolation is never violated.
+  return [[NSUserDefaults alloc] initWithSuiteName:OkintScope(store, service)];
+}
+
+/**
+ * Defense-in-depth: the JS layer already restricts namespaces to [A-Za-z0-9_],
+ * but the native module is also directly reachable via NativeModules. Re-validate
+ * here so a direct caller cannot pass "." / "-" (which OkintSanitize would collapse
+ * to "_", colliding distinct namespaces) or any path/format character.
+ */
+static BOOL OkintSafeService(NSString *service) {
+  if (![service isKindOfClass:[NSString class]] || service.length == 0 || service.length > 200) return NO;
+  for (NSUInteger i = 0; i < service.length; i++) {
+    unichar c = [service characterAtIndex:i];
+    BOOL ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+    if (!ok) return NO;
+  }
+  return YES;
 }
 
 #pragma mark - Keychain (secure store + encrypted-key storage)
@@ -123,6 +142,25 @@ static NSData *OkintKCGetDataAuth(NSString *scope, NSString *key, NSString *prom
   return nil;
 }
 
+/**
+ * Like OkintKCGetDataAuth but reports the OSStatus so the caller can tell a
+ * genuinely absent item (errSecItemNotFound → resolve null) from an authentication
+ * cancel/failure (→ reject), instead of collapsing every non-success to nil. This
+ * matches Android's secureGetAuth contract: a declined biometric must NOT read
+ * back as "logged out / no secret".
+ */
+static NSData *OkintKCGetDataAuthStatus(NSString *scope, NSString *key, NSString *prompt, OSStatus *outStatus) {
+  NSMutableDictionary *q = OkintKCQuery(scope, key);
+  q[(__bridge id)kSecReturnData] = @YES;
+  q[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
+  if (prompt) q[(__bridge id)kSecUseOperationPrompt] = prompt;
+  CFTypeRef result = NULL;
+  OSStatus s = SecItemCopyMatching((__bridge CFDictionaryRef)q, &result);
+  if (outStatus) *outStatus = s;
+  if (s == errSecSuccess) return (__bridge_transfer NSData *)result;
+  return nil;
+}
+
 #pragma mark - Crypto (encrypted store)
 
 static NSData *OkintRandom(size_t n) {
@@ -182,6 +220,9 @@ static NSString *OkintEncrypt(NSString *service, NSString *value) {
   NSData *encKey = [k subdataWithRange:NSMakeRange(0, 32)];
   NSData *macKey = [k subdataWithRange:NSMakeRange(32, 32)];
   NSData *iv = OkintRandom(16);
+  // Never fall back to a NULL (all-zero) IV if the CSPRNG fails: a nil iv would
+  // make CCCrypt use a fixed zero IV (predictable-IV weakness). Fail closed.
+  if (iv.length != 16) return nil;
   NSData *ct = OkintAES(kCCEncrypt, encKey, iv, [value dataUsingEncoding:NSUTF8StringEncoding]);
   if (!ct) return nil;
   NSMutableData *ivct = [NSMutableData dataWithData:iv];
@@ -214,13 +255,47 @@ static NSString *OkintDecrypt(NSString *service, NSString *b64) {
 
 static sqlite3 *gOkintDB = NULL;
 
+/**
+ * Open the shared SQLite connection exactly once, thread-safely. Async store
+ * methods run on the module's serial methodQueue while getEntriesSync runs on
+ * the JS thread, so the single connection can be touched from two threads:
+ *   - `dispatch_once` removes the lazy double-open race (and the unchecked
+ *     return that could cache a dead handle).
+ *   - `SQLITE_OPEN_FULLMUTEX` makes the one connection safe for concurrent use
+ *     (SQLite serializes internally) — no memory corruption across threads.
+ *   - `busy_timeout` lets contended ops wait instead of failing.
+ * The DB is plaintext (sqlite/encrypted-ciphertext stores) → excluded from
+ * iCloud/iTunes backup.
+ */
 static sqlite3 *OkintDB(void) {
-  if (gOkintDB == NULL) {
+  // Serialize the lazy open behind a one-time-created queue (so two threads can't
+  // race the open), but cache the handle ONLY on success — a transient first-time
+  // failure (dir momentarily unavailable, disk full) stays retryable on the next
+  // call, unlike dispatch_once which would make it permanent.
+  static dispatch_once_t queueOnce;
+  static dispatch_queue_t openQ;
+  dispatch_once(&queueOnce, ^{
+    openQ = dispatch_queue_create("com.okint.rnstorage.sqlite-open", DISPATCH_QUEUE_SERIAL);
+  });
+  __block sqlite3 *result = NULL;
+  dispatch_sync(openQ, ^{
+    if (gOkintDB != NULL) { result = gOkintDB; return; }
     NSString *dir = NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES).firstObject;
     NSString *path = [dir stringByAppendingPathComponent:@"okint_sqlite.db"];
-    sqlite3_open([path UTF8String], &gOkintDB);
-  }
-  return gOkintDB;
+    sqlite3 *db = NULL;
+    int rc = sqlite3_open_v2([path UTF8String], &db,
+                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
+    if (rc == SQLITE_OK && db != NULL) {
+      sqlite3_busy_timeout(db, 2000);
+      gOkintDB = db;
+      result = db;
+      NSURL *url = [NSURL fileURLWithPath:path];
+      [url setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:NULL];
+    } else if (db != NULL) {
+      sqlite3_close(db); // never cache a half-open/dead handle; remain retryable
+    }
+  });
+  return result;
 }
 
 static NSString *OkintSanitize(NSString *prefix, NSString *service) {
@@ -295,7 +370,13 @@ static NSDictionary *OkintKvAll(NSString *service) {
     while (sqlite3_step(st) == SQLITE_ROW) {
       const unsigned char *k = sqlite3_column_text(st, 0);
       const unsigned char *v = sqlite3_column_text(st, 1);
-      if (k && v) out[[NSString stringWithUTF8String:(const char *)k]] = [NSString stringWithUTF8String:(const char *)v];
+      if (k && v) {
+        // stringWithUTF8String returns nil on non-UTF-8 bytes (e.g. externally
+        // corrupted rows); inserting a nil key/value throws. Skip such rows.
+        NSString *ks = [NSString stringWithUTF8String:(const char *)k];
+        NSString *vs = [NSString stringWithUTF8String:(const char *)v];
+        if (ks && vs) out[ks] = vs;
+      }
     }
   }
   sqlite3_finalize(st);
@@ -399,6 +480,7 @@ static NSString *OkintReadOne(NSString *service, NSString *key, NSString *store,
 RCT_EXPORT_METHOD(setItem:(NSString *)service key:(NSString *)key value:(NSString *)value store:(NSString *)store
                   requireAuth:(BOOL)requireAuth
                   resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  if (!OkintSafeService(service)) { reject(@"E_OKINT_NAMESPACE", @"Invalid namespace", nil); return; }
   if ([store isEqualToString:@"secure"]) {
     NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding];
     OSStatus s = requireAuth
@@ -425,12 +507,30 @@ RCT_EXPORT_METHOD(setItem:(NSString *)service key:(NSString *)key value:(NSStrin
 RCT_EXPORT_METHOD(getItem:(NSString *)service key:(NSString *)key store:(NSString *)store
                   requireAuth:(BOOL)requireAuth
                   resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  if (!OkintSafeService(service)) { reject(@"E_OKINT_NAMESPACE", @"Invalid namespace", nil); return; }
+  // Gated secure read: distinguish "no item" from "auth cancelled/failed" so the
+  // app can branch correctly (matches Android). Only errSecItemNotFound is null.
+  if ([store isEqualToString:@"secure"] && requireAuth) {
+    OSStatus s = errSecSuccess;
+    NSData *d = OkintKCGetDataAuthStatus(OkintScope(@"secure", service), key,
+                                         @"Authenticate to access your saved data", &s);
+    if (d) {
+      NSString *str = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+      resolve(str ?: [NSNull null]);
+      return;
+    }
+    if (s == errSecItemNotFound) { resolve([NSNull null]); return; }
+    if (s == errSecUserCanceled) { reject(@"E_OKINT_AUTH_CANCELLED", @"Authentication cancelled", nil); return; }
+    reject(@"E_OKINT_AUTH", [NSString stringWithFormat:@"Authentication failed (%d)", (int)s], nil);
+    return;
+  }
   NSString *v = OkintReadOne(service, key, store, requireAuth);
   resolve(v ?: [NSNull null]);
 }
 
 RCT_EXPORT_METHOD(removeItem:(NSString *)service key:(NSString *)key store:(NSString *)store
                   resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  if (!OkintSafeService(service)) { reject(@"E_OKINT_NAMESPACE", @"Invalid namespace", nil); return; }
   if ([store isEqualToString:@"secure"]) {
     OSStatus s = SecItemDelete((__bridge CFDictionaryRef)OkintKCQuery(OkintScope(@"secure", service), key));
     if (s == errSecSuccess || s == errSecItemNotFound) resolve([NSNull null]);
@@ -445,6 +545,7 @@ RCT_EXPORT_METHOD(removeItem:(NSString *)service key:(NSString *)key store:(NSSt
 
 RCT_EXPORT_METHOD(clear:(NSString *)service store:(NSString *)store
                   resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  if (!OkintSafeService(service)) { reject(@"E_OKINT_NAMESPACE", @"Invalid namespace", nil); return; }
   if ([store isEqualToString:@"secure"]) {
     OSStatus s = SecItemDelete((__bridge CFDictionaryRef)OkintKCQuery(OkintScope(@"secure", service), nil));
     if (s == errSecSuccess || s == errSecItemNotFound) resolve([NSNull null]);
@@ -459,6 +560,7 @@ RCT_EXPORT_METHOD(clear:(NSString *)service store:(NSString *)store
 
 RCT_EXPORT_METHOD(getAllKeys:(NSString *)service store:(NSString *)store
                   resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  if (!OkintSafeService(service)) { reject(@"E_OKINT_NAMESPACE", @"Invalid namespace", nil); return; }
   if ([store isEqualToString:@"secure"]) {
     NSMutableDictionary *q = OkintKCQuery(OkintScope(@"secure", service), nil);
     q[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitAll;
@@ -484,6 +586,7 @@ RCT_EXPORT_METHOD(getAllKeys:(NSString *)service store:(NSString *)store
 
 /** Blocking-synchronous bulk read for the zero-load sync store. */
 RCT_EXPORT_BLOCKING_SYNCHRONOUS_METHOD(getEntriesSync:(NSString *)service store:(NSString *)store) {
+  if (!OkintSafeService(service)) return @{};
   if ([store isEqualToString:@"async"]) {
     NSDictionary *domain = [OkintDefaults(store, service) persistentDomainForName:OkintScope(store, service)];
     NSMutableDictionary *out = [NSMutableDictionary dictionary];

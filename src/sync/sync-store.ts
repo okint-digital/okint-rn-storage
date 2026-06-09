@@ -30,11 +30,22 @@ export class OkintSyncStore implements OkintSyncStorage {
   private pendingClear = false;
   private drainScheduled = false;
   private chain: Promise<void> = Promise.resolve();
-  private persistErrors: unknown[] = [];
+  // Bounded failure tracking (count + first error) so a never-flushed store with
+  // a permanently failing backend can't grow an unbounded error array.
+  private persistFailCount = 0;
+  private firstPersistError: unknown;
+  private warnedPersistError = false;
 
   constructor(
     backend: SyncBackendKind,
     private readonly persistence: SyncPersistence,
+    /**
+     * Optional sink for background persist failures. Without it, failures are
+     * still retained (surfaced by `flush()`) and warned once via console — but a
+     * caller that wants every failure should pass this. Background writes are
+     * otherwise invisible: the synchronous setter already returned.
+     */
+    private readonly onPersistError?: (error: unknown) => void,
   ) {
     this.backend = backend;
   }
@@ -126,7 +137,9 @@ export class OkintSyncStore implements OkintSyncStorage {
   }
 
   multiGet(keys: string[]): Record<string, string | null> {
-    const out: Record<string, string | null> = {};
+    // Null-prototype map so a key named "__proto__"/"constructor" is a plain
+    // own key, not swallowed by the prototype setter. (See facade.multiGet.)
+    const out: Record<string, string | null> = Object.create(null);
     for (const k of keys) out[k] = this.getString(k);
     return out;
   }
@@ -144,10 +157,11 @@ export class OkintSyncStore implements OkintSyncStorage {
       this.schedule();
     }
     await this.chain;
-    if (this.persistErrors.length > 0) {
-      const first = this.persistErrors[0];
-      const count = this.persistErrors.length;
-      this.persistErrors = [];
+    if (this.persistFailCount > 0) {
+      const first = this.firstPersistError;
+      const count = this.persistFailCount;
+      this.persistFailCount = 0;
+      this.firstPersistError = undefined;
       throw new OkintStorageError(
         'NATIVE_ERROR',
         `${count} background persist operation(s) failed.`,
@@ -164,7 +178,11 @@ export class OkintSyncStore implements OkintSyncStorage {
   private schedule(): void {
     if (this.drainScheduled) return;
     this.drainScheduled = true;
-    this.chain = this.chain.then(() => this.drain());
+    // Defense-in-depth: a rejection from drain() must NEVER poison the chain — a
+    // permanently-rejected chain would silently stop all future persistence. The
+    // trailing catch keeps `this.chain` always-resolving; drain() records its own
+    // failures internally (persistFailCount), so nothing is lost by swallowing here.
+    this.chain = this.chain.then(() => this.drain()).catch(() => {});
   }
 
   private async drain(): Promise<void> {
@@ -174,13 +192,75 @@ export class OkintSyncStore implements OkintSyncStorage {
     const writes = this.pending;
     this.pending = new Map();
 
-    try {
-      if (doClear) await this.persistence.clearAll();
-      for (const [key, value] of writes) {
-        await this.persistence.persist(key, value);
+    // Re-enqueue an entry for a later retry, but NEVER:
+    //  - clobber a value queued AFTER this batch was taken (a newer write wins), or
+    //  - resurrect a value a clear() armed DURING this drain has superseded. A
+    //    clear() that races in while a persist is awaiting empties `pending` and
+    //    sets `pendingClear`; without the `!pendingClear` guard a failed write
+    //    would be re-queued and then re-persisted after the clear, bringing back a
+    //    key the user explicitly removed (and which is already gone from `map`).
+    const requeue = (key: string, value: string | null) => {
+      if (!this.pendingClear && !this.pending.has(key)) this.pending.set(key, value);
+    };
+
+    if (doClear) {
+      try {
+        await this.persistence.clearAll();
+      } catch (e) {
+        // The clear is the first step of "clear then re-apply": if it fails we
+        // must re-run the WHOLE sequence, so re-enqueue the batch (these writes
+        // come AFTER the clear, so they must survive) and re-arm the clear. Order
+        // matters: requeue BEFORE re-arming pendingClear, so the guard above only
+        // suppresses writes superseded by a *different* clear that raced in.
+        for (const [key, value] of writes) requeue(key, value);
+        this.pendingClear = true;
+        this.recordPersistError(e);
+        return;
       }
-    } catch (e) {
-      this.persistErrors.push(e);
+    }
+
+    // Persist EVERY write even if one fails — a single bad key must not drop the
+    // rest of the coalesced batch (the original bug). Collect failures and
+    // re-enqueue them so the next write or flush() retries; never silently lose.
+    let firstError: unknown;
+    const failed: Array<[string, string | null]> = [];
+    for (const [key, value] of writes) {
+      try {
+        await this.persistence.persist(key, value);
+      } catch (e) {
+        if (firstError === undefined) firstError = e;
+        failed.push([key, value]);
+      }
+    }
+    for (const [key, value] of failed) requeue(key, value);
+    if (firstError !== undefined) this.recordPersistError(firstError);
+  }
+
+  private recordPersistError(error: unknown): void {
+    this.persistFailCount += 1;
+    if (this.firstPersistError === undefined) this.firstPersistError = error;
+    // The error sink (user callback OR console) must NEVER throw out of here:
+    // recordPersistError runs inside drain(), and an escaping throw would reject
+    // the persist chain and silently kill all future persistence (total data
+    // loss). So the entire sink — including console.warn, which a RN console
+    // polyfill could make throw — is wrapped.
+    try {
+      if (this.onPersistError) {
+        this.onPersistError(error);
+      } else if (!this.warnedPersistError) {
+        // Surface at least once so background data loss is never fully silent,
+        // even when the caller never calls flush(). Subsequent failures are
+        // counted (persistFailCount) and reported by flush().
+        this.warnedPersistError = true;
+        // eslint-disable-next-line no-console
+        console.warn(
+          'okint-rn-storage: a background persist failed; data is kept in memory and ' +
+            'will be retried on the next write or flush(). Call flush() to observe durability.',
+          error,
+        );
+      }
+    } catch {
+      /* durability must not depend on a working console / callback */
     }
   }
 }

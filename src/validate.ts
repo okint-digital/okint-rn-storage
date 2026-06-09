@@ -1,12 +1,21 @@
 import { OkintStorageError } from './errors';
 
 /**
- * Namespace becomes an Android SharedPreferences FILE NAME and an iOS Keychain
- * service / UserDefaults suite. It must therefore be filename-safe — no path
- * separators, `..`, NUL, or other characters that could traverse or collide.
- * Restrict to a conservative charset.
+ * Namespace becomes an Android SharedPreferences FILE NAME, an iOS Keychain
+ * service / UserDefaults suite, AND the suffix of a native SQLite table name
+ * (`kv_<ns>` / `enc_<ns>`). The native table builders only preserve
+ * `[A-Za-z0-9_]` and collapse every other character to `_`. If the JS charset
+ * were any wider than that, two DISTINCT namespaces (e.g. `a.b` and `a-b`)
+ * would collapse to the SAME table and silently share / overwrite / wipe each
+ * other's data — breaking the "namespaces never collide" guarantee.
+ *
+ * So the charset is intentionally restricted to EXACTLY the set the strictest
+ * native sink preserves verbatim: `[A-Za-z0-9_]`. With this charset the native
+ * sanitizer is a provable no-op, so the JS→native mapping is injective and no
+ * two namespaces can ever collide. `.`, `-`, `/`, `..`, NUL, spaces, etc. are
+ * rejected. (Native code re-validates this independently as defense-in-depth.)
  */
-const NAMESPACE_RE = /^[A-Za-z0-9._-]{1,200}$/;
+const NAMESPACE_RE = /^[A-Za-z0-9_]{1,200}$/;
 
 const MAX_KEY_LENGTH = 1024;
 
@@ -16,7 +25,9 @@ export function normalizeNamespace(ns: string | undefined, fallback: string): st
   if (!NAMESPACE_RE.test(value)) {
     throw new OkintStorageError(
       'INVALID_NAMESPACE',
-      `Invalid namespace "${String(ns)}". Use only letters, digits, "." "-" "_" (1-200 chars).`,
+      `Invalid namespace "${String(ns)}". Use only letters, digits and "_" (1-200 chars). ` +
+        `"." and "-" are not allowed: they collide in native table names and would let ` +
+        `distinct namespaces share storage.`,
     );
   }
   return value;
@@ -83,8 +94,19 @@ export function numberToString(key: string, value: number): string {
   return String(value);
 }
 
-/** Parse a stored number; non-numeric -> null. */
+/**
+ * Canonical decimal/scientific form, matching exactly what `String(number)`
+ * produces for a finite number (`-0` stringifies to `"0"`). We validate the
+ * TEXT first, before coercion, so that non-canonical inputs do NOT silently
+ * coerce: `Number("")`/`Number("  ")` are `0`, `Number("0x10")` is `16`,
+ * `Number("1,000")`/`Number("Infinity")` surprise too. `getNumber` must report
+ * "non-numeric → null", so anything outside this canonical form returns null.
+ */
+const CANONICAL_NUMBER_RE = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/;
+
+/** Parse a stored number; anything not in canonical numeric form -> null. */
 export function stringToNumber(raw: string): number | null {
+  if (typeof raw !== 'string' || !CANONICAL_NUMBER_RE.test(raw)) return null;
   const n = Number(raw);
   return Number.isFinite(n) ? n : null;
 }

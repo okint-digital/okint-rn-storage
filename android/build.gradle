@@ -32,6 +32,10 @@ android {
       externalNativeBuild {
         cmake {
           cppFlags "-O2", "-frtti", "-fexceptions", "-std=c++17"
+          // React Native's prefab libs (jsi / hermestooling) are built against
+          // the shared STL; the consuming CMake build MUST match or prefab
+          // resolution fails ("static STL but library requires a shared STL").
+          arguments "-DANDROID_STL=c++_shared"
         }
       }
     }

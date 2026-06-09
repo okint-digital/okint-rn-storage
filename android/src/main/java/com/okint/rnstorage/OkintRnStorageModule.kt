@@ -183,9 +183,25 @@ class OkintRnStorageModule(private val reactContext: ReactApplicationContext) :
   private fun prefs(name: String): SharedPreferences =
     prefsCache.getOrPut(name) { reactContext.getSharedPreferences(name, Context.MODE_PRIVATE) }
 
-  private fun asyncPrefs(service: String): SharedPreferences = prefs("okint_$service")
+  /**
+   * Defense-in-depth: the JS layer restricts namespaces to [A-Za-z0-9_], but the
+   * native module is also reachable directly via NativeModules. Re-validate so a
+   * direct caller cannot pass "." / "-" — which would otherwise collapse to "_" in
+   * the SQLite table name and let two distinct namespaces share one table.
+   */
+  private fun assertSafeService(service: String) {
+    require(SAFE_SERVICE.matches(service)) { "Invalid namespace (allowed: [A-Za-z0-9_], 1-200 chars)" }
+  }
 
-  private fun securePrefs(service: String): SharedPreferences = prefs("okint_secure_$service")
+  private fun asyncPrefs(service: String): SharedPreferences {
+    assertSafeService(service)
+    return prefs("okint_$service")
+  }
+
+  private fun securePrefs(service: String): SharedPreferences {
+    assertSafeService(service)
+    return prefs("okint_secure_$service")
+  }
 
   // ── Crypto core (AES-256-GCM + HMAC token, rooted in AndroidKeystore) ────────
 
@@ -258,7 +274,12 @@ class OkintRnStorageModule(private val reactContext: ReactApplicationContext) :
 
   private fun decrypt(service: String, b64: String): String {
     val data = Base64.decode(b64, Base64.NO_WRAP)
+    // Bounds-check the [ivLen|iv|ct] framing before slicing so malformed/corrupt
+    // input fails closed (caught by decryptOrNull → null) instead of throwing an
+    // index exception. GCM IV is 12 bytes; allow 12..16 defensively.
+    require(data.size >= 2) { "ciphertext too short" }
     val ivLen = data[0].toInt() and 0xFF
+    require(ivLen in 12..16 && 1 + ivLen < data.size) { "bad IV framing" }
     val iv = data.copyOfRange(1, 1 + ivLen)
     val ct = data.copyOfRange(1 + ivLen, data.size)
     val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -332,7 +353,15 @@ class OkintRnStorageModule(private val reactContext: ReactApplicationContext) :
   }
 
   private fun secureGetAuth(service: String, key: String, promise: Promise) {
-    val raw = securePrefs(service).getString(key, null)
+    // securePrefs() validates the namespace and can throw; this runs before the
+    // try below (and getItem dispatches here before ITS try), so reject cleanly
+    // rather than letting the throw escape and leave the promise unsettled.
+    val raw = try {
+      securePrefs(service).getString(key, null)
+    } catch (e: Exception) {
+      promise.reject("E_OKINT_GET", e.message, e)
+      return
+    }
     if (raw == null) {
       promise.resolve(null)
       return
@@ -343,7 +372,9 @@ class OkintRnStorageModule(private val reactContext: ReactApplicationContext) :
     }
     try {
       val data = Base64.decode(raw, Base64.NO_WRAP)
+      require(data.size >= 2) { "ciphertext too short" }
       val ivLen = data[0].toInt() and 0xFF
+      require(ivLen in 12..16 && 1 + ivLen < data.size) { "bad IV framing" }
       val iv = data.copyOfRange(1, 1 + ivLen)
       val ct = data.copyOfRange(1 + ivLen, data.size)
       val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -409,7 +440,12 @@ class OkintRnStorageModule(private val reactContext: ReactApplicationContext) :
 
   // ── encrypted store (enc_ table: HMAC token + encrypted key + encrypted value)
 
-  private fun encTable(service: String): String = "enc_" + service.replace(Regex("[^A-Za-z0-9_]"), "_")
+  // Service is validated to [A-Za-z0-9_] (assertSafeService), so it is used
+  // verbatim in the table name — injective, no lossy collapse, no collision.
+  private fun encTable(service: String): String {
+    assertSafeService(service)
+    return "enc_$service"
+  }
 
   private fun ensureEnc(db: SQLiteDatabase, service: String) {
     db.execSQL("CREATE TABLE IF NOT EXISTS ${encTable(service)} (kt TEXT PRIMARY KEY, ke TEXT NOT NULL, ve TEXT NOT NULL)")
@@ -461,7 +497,10 @@ class OkintRnStorageModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
-  private fun kvTable(service: String): String = "kv_" + service.replace(Regex("[^A-Za-z0-9_]"), "_")
+  private fun kvTable(service: String): String {
+    assertSafeService(service)
+    return "kv_$service"
+  }
 
   private fun ensureKv(db: SQLiteDatabase, service: String) {
     db.execSQL("CREATE TABLE IF NOT EXISTS ${kvTable(service)} (k TEXT PRIMARY KEY, v TEXT NOT NULL)")
@@ -511,6 +550,7 @@ class OkintRnStorageModule(private val reactContext: ReactApplicationContext) :
     }
 
     const val NAME = "OkintRnStorage"
+    private val SAFE_SERVICE = Regex("^[A-Za-z0-9_]{1,200}$")
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
     private const val STORE_SECURE = "secure"
     private const val STORE_ASYNC = "async"

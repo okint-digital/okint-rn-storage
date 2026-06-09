@@ -87,7 +87,11 @@ export class StorageFacade implements OkintStorage {
   }
 
   async multiGet(keys: string[]): Promise<Record<string, string | null>> {
-    const out: Record<string, string | null> = {};
+    // Null-prototype map: a key literally named "__proto__"/"constructor" is a
+    // valid key (round-trips via getString) but on a normal object literal it
+    // hits the prototype setter and the value is silently dropped / the result's
+    // prototype mutated. Object.create(null) makes every key a plain own key.
+    const out: Record<string, string | null> = Object.create(null);
     await Promise.all(
       keys.map(async (k) => {
         assertKey(k);

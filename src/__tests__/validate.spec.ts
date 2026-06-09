@@ -4,6 +4,7 @@ import {
   toJson,
   numberToString,
   stringToBoolean,
+  stringToNumber,
 } from '../validate';
 import { OkintStorageError } from '../errors';
 
@@ -13,7 +14,7 @@ const TAB = String.fromCharCode(9);
 describe('normalizeNamespace', () => {
   it('accepts safe namespaces and trims', () => {
     expect(normalizeNamespace('auth', 'okint')).toBe('auth');
-    expect(normalizeNamespace('  app.cache-1  ', 'okint')).toBe('app.cache-1');
+    expect(normalizeNamespace('  app_cache_1  ', 'okint')).toBe('app_cache_1');
   });
 
   it('defaults when empty/whitespace/undefined', () => {
@@ -25,6 +26,16 @@ describe('normalizeNamespace', () => {
     for (const bad of ['../evil', 'a/b', 'a\\b', 'foo bar', 'x;y', 'name@1']) {
       expect(() => normalizeNamespace(bad, 'okint')).toThrow(OkintStorageError);
     }
+  });
+
+  it('rejects "." and "-" — they collapse to "_" in native table names and would let distinct namespaces collide', () => {
+    // Regression for the namespace-collision finding: "a.b", "a-b", "a_b" all
+    // map to table kv_a_b / enc_a_b natively. Only "_" is allowed, so the
+    // JS→native mapping is injective and collisions are impossible.
+    for (const bad of ['a.b', 'a-b', 'app.cache', 'app-cache', '.', '..', '...', 'a..b']) {
+      expect(() => normalizeNamespace(bad, 'okint')).toThrow(OkintStorageError);
+    }
+    expect(normalizeNamespace('a_b', 'okint')).toBe('a_b'); // the safe equivalent
   });
 
   it('rejects over-long namespaces', () => {
@@ -77,6 +88,30 @@ describe('numberToString', () => {
   it('round-trips finite numbers', () => {
     expect(numberToString('k', 42)).toBe('42');
     expect(numberToString('k', -3.14)).toBe('-3.14');
+  });
+});
+
+describe('stringToNumber (strict canonical form)', () => {
+  it('round-trips everything setNumber/String(number) can produce', () => {
+    for (const n of [0, -0, 1, -1, 42, -3.14, 0.1, 1e21, 1e-7, 1.5e-10, Number.MAX_VALUE, 123456789012345680000]) {
+      const round = stringToNumber(numberToString('k', n));
+      expect(round).toBe(Number(String(n)));
+    }
+  });
+
+  it('rejects non-canonical / non-numeric strings (no silent coercion)', () => {
+    // Number("") === 0, Number("  ") === 0, Number("0x10") === 16,
+    // Number("Infinity") === Infinity — all must map to null, not a surprise.
+    for (const bad of ['', '   ', '\t', '0x10', '1,000', ' 5 ', '5 ', '007', '+5', 'Infinity', '-Infinity', 'NaN', '1e', '.5', '5.', '0b1']) {
+      expect(stringToNumber(bad)).toBeNull();
+    }
+  });
+
+  it('parses canonical decimals', () => {
+    expect(stringToNumber('42')).toBe(42);
+    expect(stringToNumber('-3.14')).toBe(-3.14);
+    expect(stringToNumber('0')).toBe(0);
+    expect(stringToNumber('1e+21')).toBe(1e21);
   });
 });
 

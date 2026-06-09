@@ -83,7 +83,11 @@ export function createSyncStorage(options: OkintSyncStorageOptions): Promise<Oki
 
   const built = buildSyncStore(options.backend, namespace);
   syncRegistry.set(registryKey, built);
-  built.catch(() => syncRegistry.delete(registryKey));
+  // Evict ONLY if this exact promise is still the cached one — a retry may have
+  // already replaced it, and we must not delete a newer in-flight/succeeded entry.
+  built.catch(() => {
+    if (syncRegistry.get(registryKey) === built) syncRegistry.delete(registryKey);
+  });
   return built;
 }
 

@@ -8,8 +8,12 @@
 /**
  * Installs the okint C++/JSI engine into the bridge's JS runtime. Isolated in an
  * Obj-C++ (.mm) file so the main Obj-C module stays free of C++.
+ *
+ * `extern "C"` is REQUIRED: this is declared in OkintRnStorage.m (a .m file, C
+ * linkage) and called from there. Without it, the C++ compiler name-mangles the
+ * symbol and the linker fails with "Undefined symbol _OkintInstallJSIForBridge".
  */
-BOOL OkintInstallJSIForBridge(RCTBridge *bridge) {
+extern "C" BOOL OkintInstallJSIForBridge(RCTBridge *bridge) {
   RCTCxxBridge *cxxBridge = (RCTCxxBridge *)bridge;
   if (cxxBridge == nil || ![cxxBridge respondsToSelector:@selector(runtime)]) {
     return NO;
@@ -19,6 +23,10 @@ BOOL OkintInstallJSIForBridge(RCTBridge *bridge) {
     return NO;
   }
   NSString *dir = NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES).firstObject;
-  okint::install(*reinterpret_cast<facebook::jsi::Runtime *>(runtimePtr), std::string([dir UTF8String]));
+  const char *dirUtf8 = [dir UTF8String];
+  if (dir == nil || dirUtf8 == NULL) {
+    return NO; // no writable dir → don't pass a NULL c-string into std::string (UB)
+  }
+  okint::install(*reinterpret_cast<facebook::jsi::Runtime *>(runtimePtr), std::string(dirUtf8));
   return YES;
 }

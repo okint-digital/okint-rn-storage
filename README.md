@@ -82,9 +82,15 @@ invalid input. `namespace` partitions stores so they never collide.
 
 ### Input validation
 
-- **Namespace** becomes a file/service name → restricted to `[A-Za-z0-9._-]`
-  (1–200 chars); `../`, `/`, spaces, etc. are rejected (`INVALID_NAMESPACE`) to
-  prevent filename injection / cross-store collisions.
+- **Namespace** becomes a file/service name *and* the suffix of a native SQLite
+  table (`kv_<ns>` / `enc_<ns>`) → restricted to `[A-Za-z0-9_]` (1–200 chars).
+  `.`, `-`, `../`, `/`, spaces, etc. are rejected (`INVALID_NAMESPACE`). `.` and
+  `-` are deliberately **disallowed**: the native table builders only preserve
+  `[A-Za-z0-9_]` and collapse everything else to `_`, so allowing them would let
+  two distinct namespaces (`a.b`, `a-b`, `a_b`) map to the **same** table and
+  silently share / overwrite / wipe each other's data. Restricting to `_` makes
+  the JS→native mapping injective, so namespaces can never collide. Native code
+  re-validates this independently. *(Breaking vs ≤0.7.1, which accepted `.`/`-`.)*
 - **Keys** must be non-empty strings without control characters (`INVALID_KEY`).
 - **`setNumber`** rejects `NaN`/`±Infinity` (they don't round-trip). Numbers are
   IEEE-754 doubles — for integers above 2^53 (e.g. snowflake IDs) use `setString`.
@@ -101,14 +107,23 @@ invalid input. `namespace` partitions stores so they never collide.
 | `async` | SharedPreferences | UserDefaults suite | ❌ | large / non-sensitive data |
 | `memory` | — (pure JS) | — (pure JS) | n/a | ephemeral cache, tests |
 | `fast` (sync) | SharedPreferences snapshot | UserDefaults snapshot | ❌ | **synchronous** state/flags/cache (MMKV-style) — via `createSyncStorage` |
-| `encrypted` | AES-256-GCM keys **and** values (Keystore key) over SQLite | AES-256-CBC + HMAC-SHA256 keys **and** values (key in Keychain) over SQLite | ✅ hardware-rooted key | large encrypted blobs / encrypted DB |
+| `encrypted` | AES-256-GCM keys **and** values (Keystore key) over SQLite | AES-256-CBC + HMAC-SHA256 keys **and** values (key in Keychain) over SQLite | ✅ Android: **hardware Keystore** key · iOS: **Keychain-stored software key** (not Secure Enclave) | large encrypted blobs / encrypted DB |
 | `sqlite` | SQLite key/value table | SQLite (`sqlite3`) key/value table | ❌ | larger datasets, SQL-backed key/value |
 
 All five backends are implemented. `encrypted` is a genuinely encrypted
-database: **both keys and values** are sealed with an authenticated cipher whose
-key is rooted in the hardware Keystore/Keychain, and rows are looked up by a
-deterministic HMAC token — so nothing readable touches disk, yet it still scales
-to large blobs and many entries. No SQLCipher dependency.
+database: **both keys and values** are sealed with an authenticated cipher, and
+rows are looked up by a deterministic HMAC token — so nothing readable touches
+disk, yet it still scales to large blobs and many entries. The key is a
+non-exportable **hardware Keystore** key on Android; on iOS it is a
+random key held in the **Keychain** (OS-protected at rest, but *not*
+Secure-Enclave-isolated — see Security & reliability). `requireAuth` gates only
+the `secure` backend, **not** `encrypted`.
+
+> **Note on the deterministic token.** Lookups use `HMAC(key)` as the row id, so
+> the database never stores a readable key — but equal plaintext keys produce the
+> same token. Anyone who can read the raw DB file can therefore tell *how many*
+> entries exist and whether two snapshots share a key name (not the key/value
+> itself). This is the standard cost of indexed encrypted lookup. No SQLCipher dependency.
 
 ### Synchronous (`fast`) store
 
@@ -225,6 +240,26 @@ catch (e) { if (e instanceof OkintStorageError && e.code === 'PARSE_ERROR') { /*
   `secure`; store bulk data in `async`, or encrypted bulk data in `encrypted`.
 - **Secrets are never logged** (avoids the class of bug behind CVE-2024-21668 in
   another RN storage lib). Error messages carry key names + OS status codes only.
+- **A failed decrypt returns `null`, never a crash** — by design (crash-recovery).
+  For `secure`/`encrypted` this means `null` can signify *either* "no value" *or*
+  "the stored ciphertext could not be authenticated" (lost/rotated Keystore key,
+  or tampering). Treat a `null` where you expected a value as "re-authenticate",
+  not "definitely never stored".
+- **`requireAuth` reads (iOS):** a user-cancelled or failed biometric **rejects**
+  (`E_OKINT_AUTH` / `E_OKINT_AUTH_CANCELLED`) rather than resolving `null`, so a
+  declined prompt is never mistaken for "logged out" — matching Android.
+- **Backups.** The iOS plaintext SQLite DB is excluded from iCloud/iTunes backup
+  in-code; the iOS `secure` Keychain uses `…ThisDeviceOnly` (not backed up). On
+  **Android**, `secure`/`encrypted` ciphertext lives in app-private storage that
+  the host app's default `allowBackup=true` will copy off-device — the Keystore
+  key never leaves the device, so backed-up ciphertext is **non-decryptable**
+  (data is lost on restore rather than exposed). If you want it excluded, add a
+  backup rule in your app (`android:dataExtractionRules` / `fullBackupContent`)
+  excluding `okint_secure_*` shared-prefs and `okint_sqlite.db`.
+- **`fast` (snapshot) and `createJSIStorage` are separate physical stores** — the
+  JSI engine persists to its own `okint_jsi_<ns>.bin`, not the `async` store the
+  `fast` snapshot uses. They do **not** share data; don't treat one as a drop-in
+  fallback for the other's data.
 
 ### Threat model (read this)
 

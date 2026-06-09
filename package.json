@@ -1,6 +1,6 @@
 {
   "name": "@okint-digital/okint-rn-storage",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Vanilla, pluggable React Native storage — one API over swappable backends: hardware Keystore/Keychain (secure), AES-encrypted blobs (encrypted), SQLite, SharedPreferences/UserDefaults (async), a synchronous fast store, or in-memory.",
   "keywords": [
     "react-native",
@@ -48,8 +48,8 @@
     "prepack": "npm run build"
   },
   "peerDependencies": {
-    "react": "*",
-    "react-native": "*"
+    "react": ">=18",
+    "react-native": ">=0.73"
   },
   "devDependencies": {
     "@eslint/js": "^9.18.0",

@@ -79,7 +79,8 @@ export class JSISyncStore implements OkintSyncStorage {
   }
 
   multiGet(keys: string[]): Record<string, string | null> {
-    const out: Record<string, string | null> = {};
+    // Null-prototype map so a key named "__proto__"/"constructor" round-trips.
+    const out: Record<string, string | null> = Object.create(null);
     for (const k of keys) out[k] = this.getString(k);
     return out;
   }

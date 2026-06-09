@@ -363,7 +363,8 @@ class OkintRnStorageModule(private val reactContext: ReactApplicationContext) :
    */
   @androidx.annotation.RequiresApi(Build.VERSION_CODES.P)
   private fun authenticate(cipher: Cipher, title: String, promise: Promise, onAuthed: (Cipher) -> String?) {
-    val activity = currentActivity
+    // The current Activity lives on the React context, not on the module base class.
+    val activity = reactContext.currentActivity
     if (activity == null) {
       promise.reject("E_OKINT_AUTH", "No foreground Activity to present the authentication prompt")
       return

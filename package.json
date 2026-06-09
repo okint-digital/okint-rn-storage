@@ -1,6 +1,6 @@
 {
   "name": "@okint-digital/okint-rn-storage",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Vanilla, pluggable React Native storage — one API over swappable backends: hardware Keystore/Keychain (secure), AES-encrypted blobs (encrypted), SQLite, SharedPreferences/UserDefaults (async), a synchronous fast store, or in-memory.",
   "keywords": [
     "react-native",

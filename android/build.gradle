@@ -11,6 +11,15 @@ def safeExtGet(prop, fallback) {
   rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
 }
 
+// The C++/JSI fast-path engine (createJSIStorage) needs the NDK + CMake + the
+// ReactAndroid::jsi prefab. It is OPT-IN: the default build ships pure
+// Kotlin/Java (secure/encrypted/sqlite/async + the bridge-based `fast` sync
+// store all work without it). Enable with -PokintEnableJSI=true (or
+// okintEnableJSI=true in gradle.properties). When disabled, System.loadLibrary
+// is a no-op (caught) and createJSIStorage reports the engine unavailable.
+def enableJSI = project.hasProperty("okintEnableJSI") &&
+  project.property("okintEnableJSI").toString().toBoolean()
+
 android {
   namespace "com.okint.rnstorage"
   compileSdkVersion safeExtGet("compileSdkVersion", 35)
@@ -19,21 +28,25 @@ android {
     minSdkVersion safeExtGet("minSdkVersion", 24)
     targetSdkVersion safeExtGet("targetSdkVersion", 35)
     consumerProguardFiles "proguard-rules.pro"
-    externalNativeBuild {
-      cmake {
-        cppFlags "-O2", "-frtti", "-fexceptions", "-std=c++17"
+    if (enableJSI) {
+      externalNativeBuild {
+        cmake {
+          cppFlags "-O2", "-frtti", "-fexceptions", "-std=c++17"
+        }
       }
     }
   }
 
-  // Consume React Native's prefab (JSI) for the C++ fast-path engine.
-  buildFeatures {
-    prefab true
-  }
+  if (enableJSI) {
+    // Consume React Native's prefab (JSI) for the C++ fast-path engine.
+    buildFeatures {
+      prefab true
+    }
 
-  externalNativeBuild {
-    cmake {
-      path "src/main/jni/CMakeLists.txt"
+    externalNativeBuild {
+      cmake {
+        path "src/main/jni/CMakeLists.txt"
+      }
     }
   }
 

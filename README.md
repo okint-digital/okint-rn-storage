@@ -144,6 +144,14 @@ feature flags, hot-path UI state — use `createSyncStorage`:
   It installs lazily on first use and throws a clear error under remote JS
   debugging (no JSI runtime) — fall back to `createSyncStorageSync` there.
 
+  > **Opt-in native build.** The C++/JSI engine needs the NDK + CMake + the
+  > `ReactAndroid::jsi` prefab, so it's **off by default** — the package builds
+  > as pure Kotlin/Java and every other store works without it. Enable it on
+  > **Android** with `-PokintEnableJSI=true` (or `okintEnableJSI=true` in
+  > `android/gradle.properties`); on **iOS** it's always compiled in. When
+  > disabled, `createJSIStorage` reports the engine unavailable — use
+  > `createSyncStorageSync` (still synchronous, no NDK).
+
   Use `secure` for tokens — never a sync store.
 
 ## Compared to alternatives

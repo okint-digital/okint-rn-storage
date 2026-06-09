@@ -1,4 +1,4 @@
-# okint-rn-storage
+# @okint-digital/okint-rn-storage
 
 > One async storage API for React Native. Swappable backends — hardware
 > **Keystore/Keychain** for secrets, **SharedPreferences/UserDefaults** for plain
@@ -21,7 +21,7 @@ for instead of juggling `react-native-keychain` + `react-native-encrypted-storag
 ## Install
 
 ```sh
-npm install okint-rn-storage
+npm install @okint-digital/okint-rn-storage
 # iOS
 cd ios && pod install
 # Android: autolinked. Rebuild the app.
@@ -33,7 +33,7 @@ and the New Architecture (via the interop layer).
 ## Usage
 
 ```ts
-import { createStorage } from 'okint-rn-storage';
+import { createStorage } from '@okint-digital/okint-rn-storage';
 
 // Secrets → hardware-backed Keystore / Keychain
 const auth = createStorage({ backend: 'secure', namespace: 'auth' });
@@ -49,7 +49,7 @@ await prefs.setBoolean('onboarded', true);
 const cache = createStorage({ backend: 'memory' });
 
 // SYNCHRONOUS store (the MMKV-style use case) — load once, then sync everywhere.
-import { createSyncStorage } from 'okint-rn-storage';
+import { createSyncStorage } from '@okint-digital/okint-rn-storage';
 const fast = await createSyncStorage({ backend: 'fast', namespace: 'app' });
 fast.setBoolean('onboarded', true);              // sync write (persists in background)
 const onboarded = fast.getBoolean('onboarded');  // sync read — no await
@@ -119,7 +119,7 @@ feature flags, hot-path UI state — use `createSyncStorage`:
   available immediately at startup (e.g. before first render):
 
   ```ts
-  import { createSyncStorageSync } from 'okint-rn-storage';
+  import { createSyncStorageSync } from '@okint-digital/okint-rn-storage';
   const fast = createSyncStorageSync({ backend: 'fast', namespace: 'app' });
   const onboarded = fast.getBoolean('onboarded'); // sync, no await, no load step
   ```
@@ -129,7 +129,7 @@ feature flags, hot-path UI state — use `createSyncStorage`:
   maximum-performance synchronous path, with no JS-memory snapshot:
 
   ```ts
-  import { createJSIStorage } from 'okint-rn-storage';
+  import { createJSIStorage } from '@okint-digital/okint-rn-storage';
   const kv = createJSIStorage({ namespace: 'app' });
   kv.setString('theme', 'dark');        // sync, in C++
   const theme = kv.getString('theme');  // sync, in C++
@@ -173,7 +173,7 @@ All failures throw `OkintStorageError` with a stable `code`:
 `PARSE_ERROR` · `INVALID_VALUE` · `NATIVE_ERROR`.
 
 ```ts
-import { OkintStorageError } from 'okint-rn-storage';
+import { OkintStorageError } from '@okint-digital/okint-rn-storage';
 try { await auth.getItem('x'); }
 catch (e) { if (e instanceof OkintStorageError && e.code === 'PARSE_ERROR') { /* … */ } }
 ```

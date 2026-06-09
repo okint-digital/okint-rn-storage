@@ -39,6 +39,7 @@ function makeFakeNative() {
       calls.push({ op: 'getEntriesSync', service, store });
       return Object.fromEntries(bucket(service, store));
     },
+    installJSI: () => false,
   };
   return { native, calls, stores };
 }
@@ -91,6 +92,7 @@ describe('NativeBackend', () => {
       clear: () => Promise.resolve(),
       getAllKeys: () => Promise.resolve([]),
       getEntriesSync: () => ({}),
+      installJSI: () => false,
     };
     const b = new NativeBackend(failing, 'auth', 'secure');
     await expect(b.setString('k', 'v')).rejects.toMatchObject({

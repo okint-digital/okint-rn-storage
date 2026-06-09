@@ -11,8 +11,10 @@ import { StorageFacade } from './facade';
 import { MemoryBackend } from './backends/memory';
 import { NativeBackend } from './backends/native-backend';
 import { OkintSyncStore } from './sync/sync-store';
+import { JSISyncStore } from './sync/jsi-store';
 import { MemorySyncPersistence, BackendSyncPersistence } from './sync/persistence';
 import { getNativeModule } from './native/bridge';
+import { getJSIStore } from './native/jsi';
 import { OkintStorageError } from './errors';
 import { normalizeNamespace } from './validate';
 
@@ -124,6 +126,30 @@ export function createSyncStorageSync(options: OkintSyncStorageOptions): OkintSy
   return store;
 }
 
+// JSI stores are interned per namespace (one HostObject per logical store).
+const jsiRegistry = new Map<string, OkintSyncStorage>();
+
+/**
+ * Create a synchronous store backed by the C++/JSI engine — get/set go straight
+ * into C++ with no bridge serialization and no snapshot (maximum performance,
+ * zero JS memory overhead). Installs the native engine on first use; throws if
+ * the JSI runtime is unreachable (e.g. remote JS debugging) — fall back to
+ * `createSyncStorageSync` there.
+ *
+ * @example
+ *   const kv = createJSIStorage({ namespace: 'app' });
+ *   kv.setString('theme', 'dark');           // sync, in C++
+ *   const theme = kv.getString('theme');     // sync, in C++
+ */
+export function createJSIStorage(options: { namespace?: string } = {}): OkintSyncStorage {
+  const namespace = normalizeNamespace(options.namespace, DEFAULT_NAMESPACE);
+  const existing = jsiRegistry.get(namespace);
+  if (existing) return existing;
+  const store = new JSISyncStore(getJSIStore(getNativeModule(), namespace));
+  jsiRegistry.set(namespace, store);
+  return store;
+}
+
 async function buildSyncStore(
   backend: OkintSyncStorageOptions['backend'],
   namespace: string,
@@ -150,6 +176,7 @@ export { StorageFacade } from './facade';
 export { MemoryBackend } from './backends/memory';
 export { NativeBackend } from './backends/native-backend';
 export { OkintSyncStore } from './sync/sync-store';
+export { JSISyncStore } from './sync/jsi-store';
 export { MemorySyncPersistence, BackendSyncPersistence } from './sync/persistence';
 export { OkintStorageError } from './errors';
 export type { OkintStorageErrorCode } from './errors';
@@ -159,6 +186,7 @@ export type {
   StorageBackend,
   BackendKind,
   NativeOkintStorage,
+  JSIStore,
   OkintSyncStorage,
   OkintSyncStorageOptions,
   SyncBackendKind,

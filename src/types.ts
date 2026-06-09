@@ -152,4 +152,23 @@ export interface NativeOkintStorage {
    * subsequent reads are pure in-JS Map lookups (no per-call bridge crossing).
    */
   getEntriesSync(service: string, store: NativeStoreKind): Record<string, string>;
+  /**
+   * Install the C++/JSI fast-path engine into the JS runtime (exposes
+   * `global.__okintCreateJSI`). Returns false if the runtime isn't reachable
+   * (e.g. remote JS debugging). Blocking-synchronous.
+   */
+  installJSI(): boolean;
+}
+
+/**
+ * The C++ JSI HostObject returned by `global.__okintCreateJSI(namespace)`.
+ * Every method is synchronous and crosses no bridge — the fastest path.
+ */
+export interface JSIStore {
+  getString(key: string): string | null;
+  setString(key: string, value: string): void;
+  remove(key: string): void;
+  clear(): void;
+  contains(key: string): boolean;
+  getAllKeys(): string[];
 }

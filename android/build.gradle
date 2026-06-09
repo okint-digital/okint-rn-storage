@@ -18,9 +18,23 @@ android {
   defaultConfig {
     minSdkVersion safeExtGet("minSdkVersion", 24)
     targetSdkVersion safeExtGet("targetSdkVersion", 35)
-    // Ship Tink/protobuf keep rules to consumers so R8 can't strip reflection-based
-    // keyset parsing (which would manifest as false "corruption").
     consumerProguardFiles "proguard-rules.pro"
+    externalNativeBuild {
+      cmake {
+        cppFlags "-O2", "-frtti", "-fexceptions", "-std=c++17"
+      }
+    }
+  }
+
+  // Consume React Native's prefab (JSI) for the C++ fast-path engine.
+  buildFeatures {
+    prefab true
+  }
+
+  externalNativeBuild {
+    cmake {
+      path "src/main/jni/CMakeLists.txt"
+    }
   }
 
   compileOptions {
@@ -40,10 +54,6 @@ repositories {
 
 dependencies {
   // Version supplied by the host app's React Native Gradle Plugin — do NOT pin.
+  // No other dependencies: all crypto is platform javax.crypto + AndroidKeystore.
   implementation "com.facebook.react:react-android"
-  // `secure` store: Tink AEAD (Keystore-wrapped keyset) over Jetpack DataStore —
-  // the modern, non-deprecated replacement for androidx.security:security-crypto.
-  implementation "androidx.datastore:datastore-preferences:1.1.1"
-  implementation "com.google.crypto.tink:tink-android:1.13.0"
-  implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
 }

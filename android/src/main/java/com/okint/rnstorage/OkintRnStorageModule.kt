@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -54,7 +55,11 @@ class OkintRnStorageModule(private val reactContext: ReactApplicationContext) :
   // ── Dispatch ────────────────────────────────────────────────────────────────
 
   @ReactMethod
-  fun setItem(service: String, key: String, value: String, store: String, promise: Promise) {
+  fun setItem(service: String, key: String, value: String, store: String, requireAuth: Boolean, promise: Promise) {
+    if (store == STORE_SECURE && requireAuth) {
+      secureSetAuth(service, key, value, promise)
+      return
+    }
     try {
       when (store) {
         STORE_SECURE -> securePrefs(service).edit().putString(key, encrypt(service, value)).commit()
@@ -69,7 +74,11 @@ class OkintRnStorageModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
-  fun getItem(service: String, key: String, store: String, promise: Promise) {
+  fun getItem(service: String, key: String, store: String, requireAuth: Boolean, promise: Promise) {
+    if (store == STORE_SECURE && requireAuth) {
+      secureGetAuth(service, key, promise)
+      return
+    }
     try {
       promise.resolve(readOne(service, key, store))
     } catch (e: Exception) {
@@ -180,30 +189,53 @@ class OkintRnStorageModule(private val reactContext: ReactApplicationContext) :
 
   // ── Crypto core (AES-256-GCM + HMAC token, rooted in AndroidKeystore) ────────
 
-  private fun aesKey(service: String): SecretKey {
-    val alias = "okint_enckey_$service"
+  private fun loadKey(alias: String): SecretKey? {
     val ks = KeyStore.getInstance(ANDROID_KEYSTORE)
     ks.load(null)
-    (ks.getKey(alias, null) as? SecretKey)?.let { return it }
+    return ks.getKey(alias, null) as? SecretKey
+  }
+
+  /**
+   * Generate a Keystore key, preferring the dedicated **StrongBox** secure
+   * element (Titan M / SE) when present and falling back to the TEE otherwise.
+   * Some devices advertise StrongBox but fail at generation time, so we catch
+   * broadly on the StrongBox attempt and retry without it — the documented
+   * pattern. Existing keys are loaded by alias first, so this never re-keys an
+   * install; only brand-new keys gain StrongBox backing.
+   */
+  private fun aesKey(service: String): SecretKey {
+    val alias = "okint_enckey_$service"
+    loadKey(alias)?.let { return it }
+    return generateAesKey(alias, strongBox = true) ?: generateAesKey(alias, strongBox = false)!!
+  }
+
+  private fun generateAesKey(alias: String, strongBox: Boolean): SecretKey? = try {
     val kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
-    kg.init(
-      KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-        .setKeySize(256)
-        .build(),
-    )
-    return kg.generateKey()
+    val builder = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+      .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+      .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+      .setKeySize(256)
+    if (strongBox && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) builder.setIsStrongBoxBacked(true)
+    kg.init(builder.build())
+    kg.generateKey()
+  } catch (e: Exception) {
+    if (strongBox) null else throw e
   }
 
   private fun hmacKey(service: String): SecretKey {
     val alias = "okint_enchmac_$service"
-    val ks = KeyStore.getInstance(ANDROID_KEYSTORE)
-    ks.load(null)
-    (ks.getKey(alias, null) as? SecretKey)?.let { return it }
+    loadKey(alias)?.let { return it }
+    return generateHmacKey(alias, strongBox = true) ?: generateHmacKey(alias, strongBox = false)!!
+  }
+
+  private fun generateHmacKey(alias: String, strongBox: Boolean): SecretKey? = try {
     val kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_HMAC_SHA256, ANDROID_KEYSTORE)
-    kg.init(KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN).build())
-    return kg.generateKey()
+    val builder = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)
+    if (strongBox && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) builder.setIsStrongBoxBacked(true)
+    kg.init(builder.build())
+    kg.generateKey()
+  } catch (e: Exception) {
+    if (strongBox) null else throw e
   }
 
   private fun token(service: String, key: String): String {
@@ -239,6 +271,139 @@ class OkintRnStorageModule(private val reactContext: ReactApplicationContext) :
     decrypt(service, b64)
   } catch (e: Exception) {
     null
+  }
+
+  // ── secure + requireAuth (biometric-gated AES key, per-operation CryptoObject)
+  //
+  // Opt-in path (createStorage({ backend:'secure', requireAuth:true })). The AES
+  // key is `setUserAuthenticationRequired`, so every encrypt/decrypt must run
+  // through a framework BiometricPrompt bound to the operation's Cipher. Uses a
+  // distinct key alias so it never collides with the non-gated secure key;
+  // ciphertext lives in the same SharedPreferences file, so remove/clear/keys
+  // work unchanged. Strong biometric only (CryptoObject can't combine with
+  // device-credential); API 28+. NOTE: the BiometricPrompt UI cannot be
+  // exercised without a real device — this path is build-verified on-device.
+
+  private fun secureAuthAesKey(service: String): SecretKey {
+    val alias = "okint_secauth_$service"
+    loadKey(alias)?.let { return it }
+    return generateAuthAesKey(alias, strongBox = true) ?: generateAuthAesKey(alias, strongBox = false)!!
+  }
+
+  private fun generateAuthAesKey(alias: String, strongBox: Boolean): SecretKey? = try {
+    val kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+    val builder = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+      .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+      .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+      .setKeySize(256)
+      .setUserAuthenticationRequired(true)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      // Timeout 0 → every use requires a fresh auth via CryptoObject.
+      builder.setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG)
+    }
+    if (strongBox && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) builder.setIsStrongBoxBacked(true)
+    kg.init(builder.build())
+    kg.generateKey()
+  } catch (e: Exception) {
+    if (strongBox) null else throw e
+  }
+
+  private fun secureSetAuth(service: String, key: String, value: String, promise: Promise) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+      promise.reject("E_OKINT_AUTH", "requireAuth needs Android 9 (API 28)+")
+      return
+    }
+    try {
+      val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+      cipher.init(Cipher.ENCRYPT_MODE, secureAuthAesKey(service))
+      authenticate(cipher, "Authenticate to save", promise) { authed ->
+        val iv = authed.iv
+        val ct = authed.doFinal(value.toByteArray(Charsets.UTF_8))
+        val out = ByteArray(1 + iv.size + ct.size)
+        out[0] = iv.size.toByte()
+        System.arraycopy(iv, 0, out, 1, iv.size)
+        System.arraycopy(ct, 0, out, 1 + iv.size, ct.size)
+        securePrefs(service).edit().putString(key, Base64.encodeToString(out, Base64.NO_WRAP)).commit()
+        null
+      }
+    } catch (e: Exception) {
+      promise.reject("E_OKINT_SET", e.message, e)
+    }
+  }
+
+  private fun secureGetAuth(service: String, key: String, promise: Promise) {
+    val raw = securePrefs(service).getString(key, null)
+    if (raw == null) {
+      promise.resolve(null)
+      return
+    }
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+      promise.reject("E_OKINT_AUTH", "requireAuth needs Android 9 (API 28)+")
+      return
+    }
+    try {
+      val data = Base64.decode(raw, Base64.NO_WRAP)
+      val ivLen = data[0].toInt() and 0xFF
+      val iv = data.copyOfRange(1, 1 + ivLen)
+      val ct = data.copyOfRange(1 + ivLen, data.size)
+      val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+      cipher.init(Cipher.DECRYPT_MODE, secureAuthAesKey(service), GCMParameterSpec(128, iv))
+      authenticate(cipher, "Authenticate to access", promise) { authed ->
+        String(authed.doFinal(ct), Charsets.UTF_8)
+      }
+    } catch (e: Exception) {
+      promise.reject("E_OKINT_GET", e.message, e)
+    }
+  }
+
+  /**
+   * Present a framework BiometricPrompt bound to [cipher]; on success run
+   * [onAuthed] with the authenticated cipher and resolve [promise] with its
+   * result. Runs on the UI thread (BiometricPrompt requirement).
+   */
+  @androidx.annotation.RequiresApi(Build.VERSION_CODES.P)
+  private fun authenticate(cipher: Cipher, title: String, promise: Promise, onAuthed: (Cipher) -> String?) {
+    val activity = currentActivity
+    if (activity == null) {
+      promise.reject("E_OKINT_AUTH", "No foreground Activity to present the authentication prompt")
+      return
+    }
+    activity.runOnUiThread {
+      try {
+        val executor = activity.mainExecutor
+        val builder = android.hardware.biometrics.BiometricPrompt.Builder(activity).setTitle(title)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+          builder.setAllowedAuthenticators(android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_STRONG)
+        } else {
+          builder.setNegativeButton("Cancel", executor) { _, _ ->
+            promise.reject("E_OKINT_AUTH_CANCELLED", "Authentication cancelled")
+          }
+        }
+        val prompt = builder.build()
+        val crypto = android.hardware.biometrics.BiometricPrompt.CryptoObject(cipher)
+        prompt.authenticate(
+          crypto,
+          android.os.CancellationSignal(),
+          executor,
+          object : android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: android.hardware.biometrics.BiometricPrompt.AuthenticationResult) {
+              try {
+                val authedCipher = result.cryptoObject?.cipher ?: cipher
+                promise.resolve(onAuthed(authedCipher))
+              } catch (e: Exception) {
+                promise.reject("E_OKINT_AUTH_CRYPTO", e.message, e)
+              }
+            }
+
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+              promise.reject("E_OKINT_AUTH", errString.toString())
+            }
+          },
+        )
+      } catch (e: Exception) {
+        promise.reject("E_OKINT_AUTH", e.message, e)
+      }
+    }
   }
 
   // ── encrypted store (enc_ table: HMAC token + encrypted key + encrypted value)

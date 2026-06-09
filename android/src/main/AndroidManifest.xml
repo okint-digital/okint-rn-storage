@@ -1,1 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Only used by the opt-in `requireAuth` secure store (BiometricPrompt). -->
+  <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+</manifest>

@@ -75,10 +75,47 @@ static OSStatus OkintKCSetData(NSString *scope, NSString *key, NSData *data) {
   return s;
 }
 
+/**
+ * Store a secret behind device-credential auth: the item is bound to the Secure
+ * Enclave via SecAccessControl (`.userPresence` — Face ID / Touch ID OR device
+ * passcode). The OS prompts automatically on READ; writing doesn't prompt. We
+ * delete-then-add so overwriting an existing gated item never triggers a prompt.
+ */
+static OSStatus OkintKCSetDataAuth(NSString *scope, NSString *key, NSData *data) {
+  SecAccessControlRef ac = SecAccessControlCreateWithFlags(
+      kCFAllocatorDefault,
+      kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+      kSecAccessControlUserPresence,
+      NULL);
+  if (ac == NULL) return errSecParam;
+  SecItemDelete((__bridge CFDictionaryRef)OkintKCQuery(scope, key));
+  NSMutableDictionary *add = OkintKCQuery(scope, key);
+  add[(__bridge id)kSecValueData] = data;
+  add[(__bridge id)kSecAttrAccessControl] = (__bridge_transfer id)ac; // supersedes kSecAttrAccessible
+  return SecItemAdd((__bridge CFDictionaryRef)add, NULL);
+}
+
 static NSData *OkintKCGetData(NSString *scope, NSString *key) {
   NSMutableDictionary *q = OkintKCQuery(scope, key);
   q[(__bridge id)kSecReturnData] = @YES;
   q[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
+  CFTypeRef result = NULL;
+  if (SecItemCopyMatching((__bridge CFDictionaryRef)q, &result) == errSecSuccess) {
+    return (__bridge_transfer NSData *)result;
+  }
+  return nil;
+}
+
+/**
+ * Read a gated secret. If the item carries an access-control (written via
+ * OkintKCSetDataAuth), the Keychain shows the auth UI automatically; `prompt`
+ * sets the reason string. On a plain item this behaves like OkintKCGetData.
+ */
+static NSData *OkintKCGetDataAuth(NSString *scope, NSString *key, NSString *prompt) {
+  NSMutableDictionary *q = OkintKCQuery(scope, key);
+  q[(__bridge id)kSecReturnData] = @YES;
+  q[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
+  if (prompt) q[(__bridge id)kSecUseOperationPrompt] = prompt;
   CFTypeRef result = NULL;
   if (SecItemCopyMatching((__bridge CFDictionaryRef)q, &result) == errSecSuccess) {
     return (__bridge_transfer NSData *)result;
@@ -345,9 +382,11 @@ static NSDictionary *OkintEncAll(NSString *service) {
 
 #pragma mark - Read dispatch
 
-static NSString *OkintReadOne(NSString *service, NSString *key, NSString *store) {
+static NSString *OkintReadOne(NSString *service, NSString *key, NSString *store, BOOL requireAuth) {
   if ([store isEqualToString:@"secure"]) {
-    NSData *d = OkintKCGetData(OkintScope(@"secure", service), key);
+    NSData *d = requireAuth
+        ? OkintKCGetDataAuth(OkintScope(@"secure", service), key, @"Authenticate to access your saved data")
+        : OkintKCGetData(OkintScope(@"secure", service), key);
     return d ? [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] : nil;
   }
   if ([store isEqualToString:@"encrypted"]) return OkintEncGet(service, key);
@@ -358,9 +397,13 @@ static NSString *OkintReadOne(NSString *service, NSString *key, NSString *store)
 #pragma mark - Methods
 
 RCT_EXPORT_METHOD(setItem:(NSString *)service key:(NSString *)key value:(NSString *)value store:(NSString *)store
+                  requireAuth:(BOOL)requireAuth
                   resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   if ([store isEqualToString:@"secure"]) {
-    OSStatus s = OkintKCSetData(OkintScope(@"secure", service), key, [value dataUsingEncoding:NSUTF8StringEncoding]);
+    NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding];
+    OSStatus s = requireAuth
+        ? OkintKCSetDataAuth(OkintScope(@"secure", service), key, data)
+        : OkintKCSetData(OkintScope(@"secure", service), key, data);
     if (s == errSecSuccess) resolve([NSNull null]);
     else reject(@"E_OKINT_SET", [NSString stringWithFormat:@"Keychain set failed (%d)", (int)s], nil);
     return;
@@ -380,8 +423,9 @@ RCT_EXPORT_METHOD(setItem:(NSString *)service key:(NSString *)key value:(NSStrin
 }
 
 RCT_EXPORT_METHOD(getItem:(NSString *)service key:(NSString *)key store:(NSString *)store
+                  requireAuth:(BOOL)requireAuth
                   resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
-  NSString *v = OkintReadOne(service, key, store);
+  NSString *v = OkintReadOne(service, key, store, requireAuth);
   resolve(v ?: [NSNull null]);
 }
 

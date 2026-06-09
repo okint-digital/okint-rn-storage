@@ -4,7 +4,7 @@ import type { NativeOkintStorage, NativeStoreKind } from '../types';
 /** Fake native module that records (service, store) and stores per (service, store). */
 function makeFakeNative() {
   const stores = new Map<string, Map<string, string>>();
-  const calls: Array<{ op: string; service: string; store: NativeStoreKind; key?: string }> = [];
+  const calls: Array<{ op: string; service: string; store: NativeStoreKind; key?: string; requireAuth?: boolean }> = [];
   const bucket = (service: string, store: NativeStoreKind) => {
     const id = `${store}:${service}`;
     let m = stores.get(id);
@@ -15,12 +15,12 @@ function makeFakeNative() {
     return m;
   };
   const native: NativeOkintStorage = {
-    async setItem(service, key, value, store) {
-      calls.push({ op: 'setItem', service, store, key });
+    async setItem(service, key, value, store, requireAuth) {
+      calls.push({ op: 'setItem', service, store, key, requireAuth });
       bucket(service, store).set(key, value);
     },
-    async getItem(service, key, store) {
-      calls.push({ op: 'getItem', service, store, key });
+    async getItem(service, key, store, requireAuth) {
+      calls.push({ op: 'getItem', service, store, key, requireAuth });
       return bucket(service, store).get(key) ?? null;
     },
     async removeItem(service, key, store) {
@@ -52,8 +52,24 @@ describe('NativeBackend', () => {
     await b.setString('refreshToken', 'abc');
     expect(await b.getString('refreshToken')).toBe('abc');
 
-    expect(calls[0]).toEqual({ op: 'setItem', service: 'auth', store: 'secure', key: 'refreshToken' });
+    expect(calls[0]).toEqual({ op: 'setItem', service: 'auth', store: 'secure', key: 'refreshToken', requireAuth: false });
     expect(b.kind).toBe('secure');
+  });
+
+  it('forwards requireAuth=true to native get/set when gated', async () => {
+    const { native, calls } = makeFakeNative();
+    const b = new NativeBackend(native, 'auth', 'secure', true);
+    await b.setString('token', 'abc');
+    await b.getString('token');
+    expect(calls.find((c) => c.op === 'setItem')?.requireAuth).toBe(true);
+    expect(calls.find((c) => c.op === 'getItem')?.requireAuth).toBe(true);
+  });
+
+  it('defaults requireAuth to false when not gated', async () => {
+    const { native, calls } = makeFakeNative();
+    const b = new NativeBackend(native, 'auth', 'secure');
+    await b.setString('token', 'abc');
+    expect(calls.find((c) => c.op === 'setItem')?.requireAuth).toBe(false);
   });
 
   it('forwards the right store kind for async/encrypted/sqlite', async () => {

@@ -41,6 +41,12 @@ await auth.setString('refreshToken', token);
 const token = await auth.getString('refreshToken');
 await auth.setItem('fcm', { token: t, platform: 'android' }); // JSON helper
 
+// High-value secrets → require Face ID / fingerprint / passcode to access.
+// Opt in per use case; the OS shows the auth prompt on read.
+const wallet = createStorage({ backend: 'secure', namespace: 'wallet', requireAuth: true });
+await wallet.setString('privateKey', pk);
+const pk = await wallet.getString('privateKey'); // ← triggers the biometric prompt
+
 // Plain persistent data → SharedPreferences / UserDefaults
 const prefs = createStorage({ backend: 'async', namespace: 'prefs' });
 await prefs.setBoolean('onboarded', true);
@@ -181,12 +187,21 @@ catch (e) { if (e instanceof OkintStorageError && e.code === 'PARSE_ERROR') { /*
 ## Security & reliability
 
 - **Android `secure`** encrypts every value with **AES-256-GCM** under a
-  per-namespace, non-exportable **AndroidKeystore** key (hardware-backed where the
-  device offers it); ciphertext is held in plain SharedPreferences. This is the
-  same construction `EncryptedSharedPreferences` used internally — without the
-  now-deprecated `androidx.security:security-crypto`, and with **no third-party
-  dependency** (Tink, DataStore, etc.). A failed decrypt (restored backup,
-  invalidated key) returns `null` rather than crashing on launch.
+  per-namespace, non-exportable **AndroidKeystore** key, preferring the dedicated
+  **StrongBox** secure element (Titan M / SE) and falling back to the TEE; ciphertext
+  is held in plain SharedPreferences. This is the same construction
+  `EncryptedSharedPreferences` used internally — without the now-deprecated
+  `androidx.security:security-crypto`, and with **no third-party dependency** (Tink,
+  DataStore, etc.). A failed decrypt (restored backup, invalidated key) returns
+  `null` rather than crashing on launch.
+- **Biometric / device-credential gating (`requireAuth`)** — opt-in per secure
+  store. iOS binds the Keychain item to the **Secure Enclave** via `SecAccessControl`
+  (`.userPresence` — Face ID / Touch ID *or* passcode); the OS prompts automatically
+  on read. Android (API 28+) marks the AES key `setUserAuthenticationRequired` and
+  routes every read/write through a framework **`BiometricPrompt`** bound to the
+  operation's `Cipher` (strong biometric; per-operation). With no enrolled
+  authenticator, or on API < 28, gated calls reject rather than silently
+  downgrading. Off by default — nothing prompts unless you ask for it.
 - **iOS `secure`** uses the Keychain with
   `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` (not iCloud-synced, not in
   encrypted backups, available to background tasks after first unlock) + the

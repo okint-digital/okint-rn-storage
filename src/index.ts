@@ -32,14 +32,16 @@ const DEFAULT_NAMESPACE = 'okint';
  */
 export function createStorage(options: OkintStorageOptions): OkintStorage {
   const namespace = normalizeNamespace(options.namespace, DEFAULT_NAMESPACE);
-  return new StorageFacade(resolveBackend(options.backend, namespace));
+  return new StorageFacade(resolveBackend(options.backend, namespace, options.requireAuth === true));
 }
 
-function resolveBackend(kind: BackendKind, namespace: string): StorageBackend {
+function resolveBackend(kind: BackendKind, namespace: string, requireAuth: boolean): StorageBackend {
   switch (kind) {
     case 'memory':
       return new MemoryBackend('memory');
     case 'secure':
+      // `requireAuth` only gates the secure store (hardware-key crypto).
+      return new NativeBackend(getNativeModule(), namespace, kind, requireAuth);
     case 'async':
     case 'encrypted':
     case 'sqlite':

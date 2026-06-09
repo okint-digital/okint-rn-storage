@@ -18,11 +18,13 @@ export class NativeBackend implements StorageBackend {
     private readonly native: NativeOkintStorage,
     private readonly service: string,
     readonly kind: NativeStoreKind,
+    /** Gate reads/writes behind device-credential auth (secure backend only). */
+    private readonly requireAuth: boolean = false,
   ) {}
 
   async getString(key: string): Promise<string | null> {
     try {
-      const v = await this.native.getItem(this.service, key, this.kind);
+      const v = await this.native.getItem(this.service, key, this.kind, this.requireAuth);
       return v ?? null;
     } catch (e) {
       throw wrap(e, `get "${key}"`);
@@ -31,7 +33,7 @@ export class NativeBackend implements StorageBackend {
 
   async setString(key: string, value: string): Promise<void> {
     try {
-      await this.native.setItem(this.service, key, value, this.kind);
+      await this.native.setItem(this.service, key, value, this.kind, this.requireAuth);
     } catch (e) {
       throw wrap(e, `set "${key}"`);
     }

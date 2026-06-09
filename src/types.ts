@@ -23,6 +23,23 @@ export interface OkintStorageOptions {
    * Defaults to `'okint'`.
    */
   namespace?: string;
+  /**
+   * **`secure` backend only.** Require device-credential / biometric
+   * authentication (Face ID, fingerprint, or device passcode) to access a
+   * secret. Off by default — set it per use case (e.g. gate a payment token but
+   * not a UI preference).
+   *
+   * - **iOS:** the Keychain item is bound to the Secure Enclave via
+   *   `SecAccessControl` (`.userPresence` — biometry *or* passcode). The OS
+   *   shows the auth prompt automatically on read; writes don't prompt.
+   * - **Android (API 28+):** the AES key is `setUserAuthenticationRequired`, so
+   *   reads *and* writes present a `BiometricPrompt` bound to the operation's
+   *   `Cipher`. On API < 28, or with no biometric/credential enrolled, calls
+   *   reject with `NATIVE_ERROR` rather than silently downgrading.
+   *
+   * Ignored by non-`secure` backends.
+   */
+  requireAuth?: boolean;
 }
 
 /**
@@ -141,8 +158,8 @@ export interface SyncPersistence {
  * inject a fake implementation. `store` selects which native store to target.
  */
 export interface NativeOkintStorage {
-  setItem(service: string, key: string, value: string, store: NativeStoreKind): Promise<void>;
-  getItem(service: string, key: string, store: NativeStoreKind): Promise<string | null>;
+  setItem(service: string, key: string, value: string, store: NativeStoreKind, requireAuth: boolean): Promise<void>;
+  getItem(service: string, key: string, store: NativeStoreKind, requireAuth: boolean): Promise<string | null>;
   removeItem(service: string, key: string, store: NativeStoreKind): Promise<void>;
   clear(service: string, store: NativeStoreKind): Promise<void>;
   getAllKeys(service: string, store: NativeStoreKind): Promise<string[]>;
